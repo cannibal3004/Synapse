@@ -1,0 +1,37 @@
+# Gradle
+.gradle/
+build/
+*/build/
+idea/
+*.iml
+
+# Local configuration
+local.properties
+
+# Generated LLM files
+build_error.txt
+exa.ai_docs.md
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Android Studio capture files
+*.png.capture
+*.jpg.capture
+
+# Keystore files (keep your keys safe!)
+*.jks
+*.keystore
+keys/
+
+# Temp files
+*.tmp
+*.bak
