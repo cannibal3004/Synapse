@@ -18,7 +18,7 @@ import javax.inject.Inject
 data class SettingsUiState(
     val apiKey: String? = null,
     val apiBaseUrl: String? = null,
-    val defaultModel: String? = "gpt-3.5-turbo",
+    val defaultModel: String? = null,
     val systemPrompt: String? = null,
     val embeddingModel: String? = "text-embedding-3-small",
     val exaApiKey: String? = null,

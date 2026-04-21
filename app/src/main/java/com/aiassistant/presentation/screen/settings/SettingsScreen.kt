@@ -17,12 +17,13 @@ import com.aiassistant.presentation.vm.SettingsViewModel
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
+    onToggleDrawer: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val settings by viewModel.settings.collectAsState()
     var apiKey by remember { mutableStateOf(settings.apiKey ?: "") }
     var apiBaseUrl by remember { mutableStateOf(settings.apiBaseUrl ?: "https://api.openai.com/") }
-    var defaultModel by remember { mutableStateOf(settings.defaultModel ?: "gpt-3.5-turbo") }
+    var defaultModel by remember { mutableStateOf(settings.defaultModel ?: "") }
     var systemPrompt by remember { mutableStateOf(settings.systemPrompt ?: "") }
     var embeddingModel by remember { mutableStateOf(settings.embeddingModel ?: "text-embedding-3-small") }
     var exaApiKey by remember { mutableStateOf(settings.exaApiKey ?: "") }
@@ -31,7 +32,7 @@ fun SettingsScreen(
     LaunchedEffect(settings) {
         apiKey = settings.apiKey ?: ""
         apiBaseUrl = settings.apiBaseUrl ?: "https://api.openai.com/"
-        defaultModel = settings.defaultModel ?: "gpt-3.5-turbo"
+        defaultModel = settings.defaultModel ?: ""
         systemPrompt = settings.systemPrompt ?: ""
         embeddingModel = settings.embeddingModel ?: "text-embedding-3-small"
         exaApiKey = settings.exaApiKey ?: ""
@@ -42,8 +43,13 @@ fun SettingsScreen(
             TopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    Row {
+                        IconButton(onClick = onToggleDrawer) {
+                            Icon(Icons.Default.Menu, "Menu")
+                        }
+                        IconButton(onClick = onNavigateBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        }
                     }
                 }
             )
@@ -94,7 +100,7 @@ fun SettingsScreen(
                 value = defaultModel,
                 onValueChange = { defaultModel = it },
                 label = { Text("Default Model") },
-                placeholder = { Text("gpt-3.5-turbo") },
+                placeholder = { Text("e.g., gpt-4, llama3, mistral") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )

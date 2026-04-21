@@ -6,5 +6,5 @@ data class Conversation(
     val systemPrompt: String? = null,
     val createdAt: Long,
     val updatedAt: Long,
-    val model: String = "gpt-3.5-turbo"
+    val model: String = ""
 )

@@ -128,6 +128,7 @@ dependencies {
 
     // Markdown
     implementation("org.commonmark:commonmark:0.21.0")
+    implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
 
     // PDF parsing (Android-compatible)
     // Note: No good PDF parser available for Android on Maven Central.

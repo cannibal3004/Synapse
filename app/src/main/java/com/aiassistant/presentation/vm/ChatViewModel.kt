@@ -36,8 +36,9 @@ data class ChatUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val conversationId: String? = null,
+    val isNewConversation: Boolean = false,
     val systemPrompt: String? = null,
-    val model: String = "gpt-3.5-turbo",
+    val model: String = "",
     val pendingAttachments: List<Attachment> = emptyList()
 )
 
@@ -54,7 +55,7 @@ class ChatViewModel @Inject constructor(
     private val _apiKey = MutableStateFlow<String?>(null)
     private val _baseUrl = MutableStateFlow<String?>(null)
     private val _systemPrompt = MutableStateFlow<String?>(null)
-    private val _model = MutableStateFlow("gpt-3.5-turbo")
+    private val _model = MutableStateFlow("")
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -72,7 +73,7 @@ class ChatViewModel @Inject constructor(
                 _apiKey.value = settings.apiKey
                 _baseUrl.value = settings.apiBaseUrl
                 _systemPrompt.value = settings.systemPrompt
-                _model.value = settings.defaultModel ?: "gpt-3.5-turbo"
+                _model.value = settings.defaultModel ?: ""
                 Log.d("ChatViewModel", "Settings loaded: baseUrl=${settings.apiBaseUrl}, model=${settings.defaultModel}")
             }
         }
@@ -80,27 +81,39 @@ class ChatViewModel @Inject constructor(
 
     fun createNewConversation(
         systemPrompt: String? = null,
-        model: String = "gpt-3.5-turbo"
+        persistToDb: Boolean = true
     ) {
         viewModelScope.launch {
             try {
-                Log.d("ChatViewModel", "Creating new conversation")
-                val id = conversationRepository.createConversation(
-                    title = "New Conversation",
-                    systemPrompt = systemPrompt,
-                    model = model
-                )
-                messageRepository.deleteMessages(id)
-                _uiState.value = _uiState.value.copy(
-                    conversationId = id,
-                    messages = emptyList(),
-                    systemPrompt = systemPrompt,
-                    model = model,
-                    pendingAttachments = emptyList()
-                )
-                _systemPrompt.value = systemPrompt
-                _model.value = model
-                Log.d("ChatViewModel", "Conversation created: $id")
+                Log.d("ChatViewModel", "Creating new conversation with model=${_model.value}, persistToDb=$persistToDb")
+                if (persistToDb) {
+                    val id = conversationRepository.createConversation(
+                        title = "New Conversation",
+                        systemPrompt = systemPrompt,
+                        model = _model.value
+                    )
+                    messageRepository.deleteMessages(id)
+                    _uiState.value = _uiState.value.copy(
+                        conversationId = id,
+                        isNewConversation = false,
+                        messages = emptyList(),
+                        systemPrompt = systemPrompt,
+                        model = _model.value,
+                        pendingAttachments = emptyList()
+                    )
+                    Log.d("ChatViewModel", "Conversation created: $id")
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        conversationId = null,
+                        isNewConversation = true,
+                        messages = emptyList(),
+                        systemPrompt = systemPrompt,
+                        model = _model.value,
+                        pendingAttachments = emptyList()
+                    )
+                    _systemPrompt.value = systemPrompt
+                    Log.d("ChatViewModel", "New conversation created in memory only")
+                }
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error creating conversation", e)
                 _uiState.value = _uiState.value.copy(
@@ -114,11 +127,15 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 Log.d("ChatViewModel", "Loading conversation: $conversationId")
+                val conversation = conversationRepository.getConversationById(conversationId)
                 val messages = messageRepository.getMessagesSync(conversationId)
                 _uiState.value = _uiState.value.copy(
                     conversationId = conversationId,
-                    messages = messages
+                    messages = messages,
+                    systemPrompt = conversation?.systemPrompt,
+                    model = conversation?.model ?: _model.value
                 )
+                _systemPrompt.value = conversation?.systemPrompt
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error loading conversation", e)
                 _uiState.value = _uiState.value.copy(
@@ -169,13 +186,15 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessage(userMessage: String, attachments: List<Attachment> = emptyList()) {
-        val currentConversationId = _uiState.value.conversationId
-            ?: return
+        if (!_uiState.value.isNewConversation && _uiState.value.conversationId == null) {
+            return
+        }
 
         viewModelScope.launch {
+            val tempConversationId = _uiState.value.conversationId ?: "temp_new_${System.currentTimeMillis()}"
             val userMsg = ChatMessage(
                 id = "temp_${System.currentTimeMillis()}",
-                conversationId = currentConversationId,
+                conversationId = tempConversationId,
                 role = MessageRole.USER,
                 content = userMessage,
                 timestamp = System.currentTimeMillis(),
@@ -189,15 +208,32 @@ class ChatViewModel @Inject constructor(
             )
 
             try {
+                var effectiveConversationId = tempConversationId
+                if (_uiState.value.isNewConversation) {
+                    val title = generateTitleFromMessage(userMessage)
+                    effectiveConversationId = conversationRepository.createConversation(
+                        title = title,
+                        systemPrompt = _uiState.value.systemPrompt,
+                        model = _uiState.value.model
+                    )
+                    _uiState.value = _uiState.value.copy(
+                        conversationId = effectiveConversationId,
+                        isNewConversation = false
+                    )
+                    Log.d("ChatViewModel", "Persisted new conversation: $effectiveConversationId")
+                } else {
+                    effectiveConversationId = tempConversationId!!
+                }
+
                 val (content, apiAttachments) = processAttachments(userMessage, attachments)
                 
                 messageRepository.addMessage(
-                    conversationId = currentConversationId,
+                    conversationId = effectiveConversationId,
                     role = "user",
                     content = content
                 )
 
-                val history = buildApiMessages(currentConversationId)
+                val history = buildApiMessages(effectiveConversationId)
                 
                 val userApiMessage = if (apiAttachments.isNotEmpty()) {
                     val contentList = mutableListOf<Map<String, Any>>()
@@ -240,7 +276,7 @@ class ChatViewModel @Inject constructor(
                         }
 
                         messageRepository.addMessageWithToolCalls(
-                            conversationId = currentConversationId,
+                            conversationId = effectiveConversationId,
                             role = "assistant",
                             content = "",
                             toolCalls = gson.toJson(domainToolCalls)
@@ -274,12 +310,12 @@ class ChatViewModel @Inject constructor(
                 } while (toolCalls != null && toolCalls.isNotEmpty() && round < maxRounds)
 
                 messageRepository.addMessage(
-                    conversationId = currentConversationId,
+                    conversationId = effectiveConversationId,
                     role = "assistant",
                     content = assistantContent
                 )
 
-                val updatedMessages = messageRepository.getMessagesSync(currentConversationId)
+                val updatedMessages = messageRepository.getMessagesSync(effectiveConversationId)
                 _uiState.value = _uiState.value.copy(
                     messages = updatedMessages,
                     isLoading = false
@@ -391,6 +427,65 @@ class ChatViewModel @Inject constructor(
         }
 
         return history
+    }
+
+    private fun generateTitleFromMessage(message: String): String {
+        val firstLine = message.trimIndent().trim()
+            .split('\n')
+            .firstOrNull()
+            ?.trim()
+            ?: message.trim()
+        
+        return if (firstLine.length > 40) {
+            firstLine.take(40).trim() + "..."
+        } else {
+            firstLine
+        }
+    }
+
+    fun clearMessages() {
+        val currentConversationId = _uiState.value.conversationId ?: return
+        viewModelScope.launch {
+            try {
+                messageRepository.deleteMessages(currentConversationId)
+                _uiState.value = _uiState.value.copy(
+                    messages = emptyList(),
+                    error = null
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    error = "Error: ${e.message}"
+                )
+            }
+        }
+    }
+
+    fun clearError() {
+        _uiState.value = _uiState.value.copy(error = null)
+    }
+
+    fun saveConversationSettings(systemPrompt: String?, model: String) {
+        val currentConversationId = _uiState.value.conversationId ?: return
+        viewModelScope.launch {
+            try {
+                conversationRepository.updateConversationSettings(
+                    currentConversationId,
+                    systemPrompt,
+                    model
+                )
+                _systemPrompt.value = systemPrompt
+                _model.value = model
+                _uiState.value = _uiState.value.copy(
+                    systemPrompt = systemPrompt,
+                    model = model,
+                    error = null
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    error = "Error: ${e.message}"
+                )
+            }
+        }
     }
 
     fun updateApiKey(key: String?) {

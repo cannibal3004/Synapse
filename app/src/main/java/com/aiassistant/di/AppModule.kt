@@ -60,11 +60,6 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideConversationRepository(dao: com.aiassistant.data.database.ConversationDao) =
-        ConversationRepositoryImpl(dao)
-
-    @Provides
-    @Singleton
     fun provideMessageRepository(dao: com.aiassistant.data.database.MessageDao) =
         MessageRepositoryImpl(dao)
 

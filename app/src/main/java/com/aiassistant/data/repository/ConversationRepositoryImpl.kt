@@ -7,9 +7,11 @@ import com.aiassistant.domain.repository.ConversationRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.util.UUID
+import javax.inject.Inject
 
-class ConversationRepositoryImpl(
-    private val conversationDao: ConversationDao
+class ConversationRepositoryImpl @Inject constructor(
+    private val conversationDao: ConversationDao,
+    private val messageRepository: com.aiassistant.domain.repository.MessageRepository
 ) : ConversationRepository {
 
     override fun getAllConversations(): Flow<List<Conversation>> {
@@ -46,7 +48,12 @@ class ConversationRepositoryImpl(
         conversationDao.updateConversationTitle(id, title, System.currentTimeMillis())
     }
 
+    override suspend fun updateConversationSettings(id: String, systemPrompt: String?, model: String) {
+        conversationDao.updateConversationSettings(id, systemPrompt, model, System.currentTimeMillis())
+    }
+
     override suspend fun deleteConversation(id: String) {
+        messageRepository.deleteMessages(id)
         val conversation = conversationDao.getConversationById(id)
         conversation?.let {
             conversationDao.deleteConversation(it)

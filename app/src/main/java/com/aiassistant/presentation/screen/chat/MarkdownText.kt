@@ -1,8 +1,12 @@
 package com.aiassistant.presentation.screen.chat
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.*
@@ -12,19 +16,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import org.commonmark.node.StrongEmphasis
-import org.commonmark.node.Node
-import org.commonmark.node.Text
-import org.commonmark.node.Code
-import org.commonmark.node.Link
-import org.commonmark.node.Heading
-import org.commonmark.node.BlockQuote
-import org.commonmark.node.BulletList
-import org.commonmark.node.OrderedList
-import org.commonmark.node.ListItem
-import org.commonmark.node.ThematicBreak
-import org.commonmark.node.Emphasis
-import org.commonmark.node.FencedCodeBlock
+import org.commonmark.ext.gfm.tables.TableBlock
+import org.commonmark.ext.gfm.tables.TableCell
+import org.commonmark.ext.gfm.tables.TableRow
+import org.commonmark.ext.gfm.tables.TablesExtension
+import org.commonmark.node.*
 import org.commonmark.parser.Parser
 
 @Composable
@@ -35,7 +31,9 @@ fun MarkdownText(
     fontSize: TextUnit = MaterialTheme.typography.bodyMedium.fontSize,
     fontWeight: FontWeight = MaterialTheme.typography.bodyMedium.fontWeight ?: FontWeight.Normal,
 ) {
-    val parser = Parser.Builder().build()
+    val parser = Parser.Builder()
+        .extensions(listOf(TablesExtension.create()))
+        .build()
     val document = parser.parse(markdown)
 
     val paragraphs = mutableListOf<AnnotatedParagraph>()
@@ -93,6 +91,12 @@ fun MarkdownText(
                         )
                     )
                 )
+            }
+            is TableBlock -> {
+                val tableData = extractTableData(child, color, fontSize, fontWeight)
+                if (tableData.isNotEmpty()) {
+                    paragraphs.add(TableParagraph(tableData))
+                }
             }
             is BlockQuote -> {
                 val sb = StringBuilder()
@@ -197,9 +201,140 @@ fun MarkdownText(
                 is AnnotatedHorizontalRule -> {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 }
+                is TableParagraph -> {
+                    RenderTable(
+                        tableData = paragraph.tableData,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
     }
+}
+
+@Composable
+private fun RenderTable(
+    tableData: List<List<AnnotatedString>>,
+    modifier: Modifier = Modifier
+) {
+    if (tableData.isEmpty()) return
+
+    val numCols = tableData.maxOfOrNull { it.size } ?: 0
+    val transposed = if (numCols > 0) {
+        (0 until numCols).map { colIdx ->
+            tableData.map { row ->
+                if (colIdx < row.size) row[colIdx] else AnnotatedString("")
+            }
+        }
+    } else {
+        emptyList()
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+        ),
+        modifier = modifier
+    ) {
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(1.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            transposed.forEachIndexed { colIdx, colData ->
+                item(key = "col-$colIdx") {
+                    Column(
+                        modifier = Modifier
+                            .wrapContentHeight()
+                            .defaultMinSize(minWidth = 80.dp)
+                    ) {
+                        colData.forEachIndexed { rowIndex, cellContent ->
+                            val isHeader = rowIndex == 0
+                            val bgColor = if (isHeader) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                if (rowIndex % 2 == 0) {
+                                    MaterialTheme.colorScheme.surfaceContainerHighest
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(bgColor)
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                Text(
+                                    text = cellContent,
+                                    style = TextStyle(
+                                        color = if (isHeader) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                        fontSize = if (isHeader) {
+                                            MaterialTheme.typography.bodyMedium.fontSize
+                                        } else {
+                                            MaterialTheme.typography.bodySmall.fontSize
+                                        },
+                                        fontWeight = if (isHeader) {
+                                            FontWeight.Bold
+                                        } else {
+                                            FontWeight.Normal
+                                        }
+                                    )
+                                )
+                            }
+
+                            if (rowIndex < tableData.size - 1) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = 1.dp),
+                                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun extractTableData(
+    tableNode: TableBlock,
+    baseColor: Color,
+    baseFontSize: TextUnit,
+    baseFontWeight: FontWeight
+): List<List<AnnotatedString>> {
+    val rows = mutableListOf<List<AnnotatedString>>()
+    var rowNode = tableNode.firstChild
+
+    while (rowNode != null) {
+        if (rowNode is TableRow) {
+            val cells = mutableListOf<AnnotatedString>()
+            var cellNode = rowNode.firstChild
+
+            while (cellNode != null) {
+                if (cellNode is TableCell) {
+                    val cellText = buildAnnotatedString(
+                        node = cellNode.firstChild,
+                        baseColor = baseColor,
+                        baseFontSize = baseFontSize,
+                        baseFontWeight = baseFontWeight
+                    )
+                    cells.add(cellText)
+                }
+                cellNode = cellNode.next
+            }
+
+            rows.add(cells)
+        }
+        rowNode = rowNode.next
+    }
+
+    return rows
 }
 
 @Composable
@@ -315,7 +450,6 @@ private fun buildAnnotatedString(
 }
 
 private sealed interface AnnotatedParagraph {
-    val annotatedString: AnnotatedString
     val color: Color?
     val fontSize: TextUnit?
     val fontWeight: FontWeight?
@@ -323,7 +457,7 @@ private sealed interface AnnotatedParagraph {
 }
 
 private data class RegularParagraph(
-    override val annotatedString: AnnotatedString,
+    val annotatedString: AnnotatedString,
     override val color: Color? = null,
     override val fontSize: TextUnit? = null,
     override val fontWeight: FontWeight? = null,
@@ -331,7 +465,7 @@ private data class RegularParagraph(
 ) : AnnotatedParagraph
 
 private data class CodeParagraph(
-    override val annotatedString: AnnotatedString,
+    val annotatedString: AnnotatedString,
 ) : AnnotatedParagraph {
     override val color: Color? = null
     override val fontSize: TextUnit? = null
@@ -340,8 +474,15 @@ private data class CodeParagraph(
 }
 
 private object AnnotatedHorizontalRule : AnnotatedParagraph {
-    override val annotatedString: AnnotatedString
-        get() = throw UnsupportedOperationException()
+    override val color: Color? = null
+    override val fontSize: TextUnit? = null
+    override val fontWeight: FontWeight? = null
+    override val fontFamily: FontFamily? = null
+}
+
+private data class TableParagraph(
+    val tableData: List<List<AnnotatedString>>,
+) : AnnotatedParagraph {
     override val color: Color? = null
     override val fontSize: TextUnit? = null
     override val fontWeight: FontWeight? = null

@@ -32,7 +32,7 @@ class SettingsDataRepository @javax.inject.Inject constructor(
             SettingsRepository.AppSettings(
                 apiKey = preferences[SettingsKeys.API_KEY],
                 apiBaseUrl = preferences[SettingsKeys.API_BASE_URL],
-                defaultModel = preferences[SettingsKeys.DEFAULT_MODEL] ?: "gpt-3.5-turbo",
+                defaultModel = preferences[SettingsKeys.DEFAULT_MODEL],
                 systemPrompt = preferences[SettingsKeys.SYSTEM_PROMPT],
                 embeddingModel = preferences[SettingsKeys.EMBEDDING_MODEL] ?: "text-embedding-3-small",
                 exaApiKey = preferences[SettingsKeys.EXA_API_KEY]
