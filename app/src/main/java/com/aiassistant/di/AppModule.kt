@@ -17,6 +17,8 @@ import com.aiassistant.domain.tool.ToolExecutor
 import com.aiassistant.domain.tool.WebPageFetcherTool
 import com.aiassistant.domain.tool.WeatherTool
 import com.aiassistant.domain.tool.WebSearchTool
+import com.aiassistant.data.llm.OnDeviceLlmSettingsManager
+import com.aiassistant.data.notification.NotificationHelper
 import com.aiassistant.data.scheduler.TaskScheduler
 import com.aiassistant.domain.usecase.MemorySearchUseCase
 import com.aiassistant.domain.usecase.TaskExecutor
@@ -132,4 +134,14 @@ object AppModule {
     @Provides
     @Singleton
     fun provideTaskScheduler(@ApplicationContext context: Context) = TaskScheduler(context)
+
+    @Provides
+    @Singleton
+    fun provideOnDeviceLlmSettingsManager(@ApplicationContext context: Context) =
+        OnDeviceLlmSettingsManager(context)
+
+    @Provides
+    @Singleton
+    fun provideNotificationHelper(@ApplicationContext context: Context) =
+        NotificationHelper(context)
 }

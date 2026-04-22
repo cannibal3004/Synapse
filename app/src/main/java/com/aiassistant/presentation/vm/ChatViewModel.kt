@@ -6,8 +6,11 @@ import android.util.Base64
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aiassistant.data.llm.OnDeviceLlmSettingsManager
 import com.aiassistant.data.model.api.ChatMessage as ApiChatMessage
+import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.data.repository.SettingsDataRepository
+import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.model.Attachment
 import com.aiassistant.domain.model.AttachmentType
 import com.aiassistant.domain.model.ChatMessage
@@ -24,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectIndexed
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -39,7 +43,11 @@ data class ChatUiState(
     val isNewConversation: Boolean = false,
     val systemPrompt: String? = null,
     val model: String = "",
-    val pendingAttachments: List<Attachment> = emptyList()
+    val pendingAttachments: List<Attachment> = emptyList(),
+    val isOnDeviceMode: Boolean = false,
+    val onDeviceDownloading: Boolean = false,
+    val onDeviceDownloadProgress: Float = 0f,
+    val onDeviceEngineReady: Boolean = false
 )
 
 @HiltViewModel
@@ -49,6 +57,8 @@ class ChatViewModel @Inject constructor(
     private val messageRepository: MessageRepository,
     private val toolExecutor: ToolExecutor,
     private val settingsRepository: SettingsDataRepository,
+    private val onDeviceLlmRepository: OnDeviceLlmRepository,
+    private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
     @ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
 
@@ -56,6 +66,7 @@ class ChatViewModel @Inject constructor(
     private val _baseUrl = MutableStateFlow<String?>(null)
     private val _systemPrompt = MutableStateFlow<String?>(null)
     private val _model = MutableStateFlow("")
+    private val _isOnDeviceMode = MutableStateFlow(false)
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -65,6 +76,8 @@ class ChatViewModel @Inject constructor(
     init {
         Log.d("ChatViewModel", "ViewModel initialized")
         loadSettings()
+        loadOnDeviceSettings()
+        observeOnDeviceState()
     }
 
     private fun loadSettings() {
@@ -75,6 +88,28 @@ class ChatViewModel @Inject constructor(
                 _systemPrompt.value = settings.systemPrompt
                 _model.value = settings.defaultModel ?: ""
                 Log.d("ChatViewModel", "Settings loaded: baseUrl=${settings.apiBaseUrl}, model=${settings.defaultModel}")
+            }
+        }
+    }
+
+    private fun loadOnDeviceSettings() {
+        viewModelScope.launch {
+            onDeviceLlmSettingsManager.settings.collect { settings ->
+                _isOnDeviceMode.value = settings.enabled
+                Log.d("ChatViewModel", "On-device settings loaded: enabled=${settings.enabled}")
+            }
+        }
+    }
+
+    private fun observeOnDeviceState() {
+        viewModelScope.launch {
+            onDeviceLlmRepository.state.collect { state ->
+                _uiState.value = _uiState.value.copy(
+                    onDeviceDownloading = state.isLoading,
+                    onDeviceEngineReady = state.isReady,
+                    error = state.error
+                )
+                Log.d("ChatViewModel", "On-device state: ready=${state.isReady}, loading=${state.isLoading}")
             }
         }
     }
@@ -225,89 +260,17 @@ class ChatViewModel @Inject constructor(
                     effectiveConversationId = tempConversationId!!
                 }
 
-                val (content, apiAttachments) = processAttachments(userMessage, attachments)
-                
                 messageRepository.addMessage(
                     conversationId = effectiveConversationId,
                     role = "user",
-                    content = content
+                    content = userMessage
                 )
 
-                val history = buildApiMessages(effectiveConversationId)
-                
-                val userApiMessage = if (apiAttachments.isNotEmpty()) {
-                    val contentList = mutableListOf<Map<String, Any>>()
-                    contentList.add(mapOf("type" to "text", "text" to content))
-                    contentList.addAll(apiAttachments)
-                    ApiChatMessage(
-                        role = "user",
-                        content = contentList
-                    )
+                val assistantContent = if (_isOnDeviceMode.value) {
+                    getOnDeviceResponse(effectiveConversationId, userMessage, attachments)
                 } else {
-                    ApiChatMessage("user", content)
+                    getCloudResponse(effectiveConversationId, userMessage, attachments)
                 }
-                history.add(userApiMessage)
-
-                val tools = ToolManager.buildToolDefinitions()
-                var assistantContent = ""
-                var round = 0
-                val maxRounds = 10
-                var toolCalls: List<com.aiassistant.data.model.api.ToolCall>? = null
-
-                do {
-                    val response = chatApiRepository.sendChatRequest(
-                        apiKey = _apiKey.value ?: "",
-                        model = _model.value,
-                        baseUrl = _baseUrl.value,
-                        messages = history,
-                        tools = tools
-                    )
-
-                    val assistantMessage = response.choices.firstOrNull()?.message
-                    toolCalls = assistantMessage?.tool_calls
-
-                    if (toolCalls != null && toolCalls.isNotEmpty()) {
-                        val domainToolCalls = toolCalls.map {
-                            com.aiassistant.domain.model.ToolCall(
-                                id = it.id,
-                                name = it.function.name,
-                                arguments = it.function.arguments
-                            )
-                        }
-
-                        messageRepository.addMessageWithToolCalls(
-                            conversationId = effectiveConversationId,
-                            role = "assistant",
-                            content = "",
-                            toolCalls = gson.toJson(domainToolCalls)
-                        )
-
-                        val toolResults = withContext(Dispatchers.IO) {
-                            domainToolCalls.map { toolCall ->
-                                val result = toolExecutor.executeTool(toolCall.name, toolCall.arguments)
-                                com.aiassistant.domain.model.ToolResult(
-                                    toolCallId = toolCall.id,
-                                    name = toolCall.name,
-                                    result = result
-                                )
-                            }
-                        }
-
-                        toolResults.forEach { result ->
-                            history.add(
-                                ApiChatMessage(
-                                    role = "tool",
-                                    content = result.result,
-                                    tool_call_id = result.toolCallId
-                                )
-                            )
-                        }
-
-                        round++
-                    } else {
-                        assistantContent = assistantMessage?.content ?: ""
-                    }
-                } while (toolCalls != null && toolCalls.isNotEmpty() && round < maxRounds)
 
                 messageRepository.addMessage(
                     conversationId = effectiveConversationId,
@@ -328,6 +291,137 @@ class ChatViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    private suspend fun getOnDeviceResponse(
+        conversationId: String,
+        userMessage: String,
+        attachments: List<Attachment>
+    ): String {
+        val onDeviceSettings = onDeviceLlmSettingsManager.getSettings()
+
+        val modelPath = if (onDeviceLlmRepository.isModelAvailable(onDeviceSettings.modelName)) {
+            onDeviceLlmRepository.getModelPath(onDeviceSettings.modelName)
+        } else {
+            _uiState.value = _uiState.value.copy(onDeviceDownloading = true)
+            val result = onDeviceLlmRepository.downloadModel(
+                huggingfaceRepo = onDeviceSettings.huggingfaceRepo,
+                modelName = onDeviceSettings.modelName
+            ) { progress ->
+                _uiState.value = _uiState.value.copy(onDeviceDownloadProgress = progress)
+            }
+            _uiState.value = _uiState.value.copy(onDeviceDownloading = false)
+
+            result.getOrNull() ?: run {
+                return "Error: Failed to download model - ${result.exceptionOrNull()?.message}"
+            }
+        }
+
+        val initResult = onDeviceLlmRepository.initializeModel(
+            modelPath = modelPath,
+            systemPrompt = onDeviceSettings.systemPrompt,
+            temperature = onDeviceSettings.temperature,
+            topK = onDeviceSettings.topK,
+            topP = onDeviceSettings.topP
+        )
+
+        if (!initResult.isSuccess) {
+            return "Error: Failed to initialize on-device model - ${initResult.exceptionOrNull()?.message}"
+        }
+
+        val domainMessages = messageRepository.getMessagesSync(conversationId)
+            .filter { it.role != MessageRole.SYSTEM }
+            .toMutableList()
+
+        val chatResult = onDeviceLlmRepository.chat(domainMessages)
+
+        return chatResult.getOrNull() ?: "Error: On-device model failed to respond"
+    }
+
+    private suspend fun getCloudResponse(
+        conversationId: String,
+        userMessage: String,
+        attachments: List<Attachment>
+    ): String {
+        val (content, apiAttachments) = processAttachments(userMessage, attachments)
+
+        val history = buildApiMessages(conversationId)
+
+        val userApiMessage = if (apiAttachments.isNotEmpty()) {
+            val contentList = mutableListOf<Map<String, Any>>()
+            contentList.add(mapOf("type" to "text", "text" to content))
+            contentList.addAll(apiAttachments)
+            ApiChatMessage(
+                role = "user",
+                content = contentList
+            )
+        } else {
+            ApiChatMessage("user", content)
+        }
+        history.add(userApiMessage)
+
+        val tools = ToolManager.buildToolDefinitions()
+        var assistantContent = ""
+        var round = 0
+        val maxRounds = 10
+        var toolCalls: List<com.aiassistant.data.model.api.ToolCall>? = null
+
+        do {
+            val response = chatApiRepository.sendChatRequest(
+                apiKey = _apiKey.value ?: "",
+                model = _model.value,
+                baseUrl = _baseUrl.value,
+                messages = history,
+                tools = tools
+            )
+
+            val assistantMessage = response.choices.firstOrNull()?.message
+            toolCalls = assistantMessage?.tool_calls
+
+            if (toolCalls != null && toolCalls.isNotEmpty()) {
+                val domainToolCalls = toolCalls.map {
+                    com.aiassistant.domain.model.ToolCall(
+                        id = it.id,
+                        name = it.function.name,
+                        arguments = it.function.arguments
+                    )
+                }
+
+                messageRepository.addMessageWithToolCalls(
+                    conversationId = conversationId,
+                    role = "assistant",
+                    content = "",
+                    toolCalls = gson.toJson(domainToolCalls)
+                )
+
+                val toolResults = withContext(Dispatchers.IO) {
+                    domainToolCalls.map { toolCall ->
+                        val result = toolExecutor.executeTool(toolCall.name, toolCall.arguments)
+                        com.aiassistant.domain.model.ToolResult(
+                            toolCallId = toolCall.id,
+                            name = toolCall.name,
+                            result = result
+                        )
+                    }
+                }
+
+                toolResults.forEach { result ->
+                    history.add(
+                        ApiChatMessage(
+                            role = "tool",
+                            content = result.result,
+                            tool_call_id = result.toolCallId
+                        )
+                    )
+                }
+
+                round++
+            } else {
+                assistantContent = assistantMessage?.content ?: ""
+            }
+        } while (toolCalls != null && toolCalls.isNotEmpty() && round < maxRounds)
+
+        return assistantContent
     }
 
     private suspend fun processAttachments(
@@ -498,5 +592,11 @@ class ChatViewModel @Inject constructor(
 
     fun updateModel(model: String) {
         _model.value = model
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        onDeviceLlmRepository.shutdown()
+        Log.d("ChatViewModel", "ViewModel cleared, on-device engine shutdown")
     }
 }

@@ -4,10 +4,13 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aiassistant.data.llm.OnDeviceLlmSettingsManager
 import com.aiassistant.data.repository.SettingsDataRepository
+import com.aiassistant.domain.llm.OnDeviceLlmSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -22,6 +25,7 @@ data class SettingsUiState(
     val systemPrompt: String? = null,
     val embeddingModel: String? = "text-embedding-3-small",
     val exaApiKey: String? = null,
+    val onDeviceSettings: OnDeviceLlmSettings? = null,
     val isSaved: Boolean = false
 )
 
@@ -44,6 +48,7 @@ When a tool returns an error:
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsDataRepository,
+    private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
     @ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
 
@@ -52,7 +57,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     val settings = settingsRepository.settings
-        .map { appSettings ->
+        .combine(onDeviceLlmSettingsManager.settings) { appSettings, onDeviceSettings ->
             val savedExaKey = sharedPreferences.getString("exa_api_key", null)
             SettingsUiState(
                 apiKey = appSettings.apiKey,
@@ -61,6 +66,7 @@ class SettingsViewModel @Inject constructor(
                 systemPrompt = appSettings.systemPrompt,
                 embeddingModel = appSettings.embeddingModel,
                 exaApiKey = savedExaKey ?: appSettings.exaApiKey,
+                onDeviceSettings = onDeviceSettings,
                 isSaved = false
             )
         }
@@ -94,6 +100,12 @@ class SettingsViewModel @Inject constructor(
                 }
                 apply()
             }
+        }
+    }
+
+    fun saveOnDeviceSettings(settings: OnDeviceLlmSettings) {
+        viewModelScope.launch {
+            onDeviceLlmSettingsManager.saveSettings(settings)
         }
     }
 }

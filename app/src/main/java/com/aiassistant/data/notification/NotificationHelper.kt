@@ -23,6 +23,9 @@ class NotificationHelper @Inject constructor(
         const val NOTIFICATION_CHANNEL_TASKS_ID = 1001
         const val NOTIFICATION_CHANNEL_RUNNING = "task_running"
         const val NOTIFICATION_CHANNEL_RUNNING_ID = 1002
+        const val NOTIFICATION_CHANNEL_DOWNLOAD = "model_download"
+        const val NOTIFICATION_CHANNEL_DOWNLOAD_ID = 1003
+        const val NOTIFICATION_ID_DOWNLOAD = 2001
         const val TAG = "NotificationHelper"
     }
 
@@ -54,8 +57,18 @@ class NotificationHelper @Inject constructor(
                 setShowBadge(false)
             }
 
+            val downloadChannel = NotificationChannel(
+                NOTIFICATION_CHANNEL_DOWNLOAD,
+                "Model Downloads",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Shows progress of on-device model downloads"
+                setShowBadge(false)
+            }
+
             notificationManager.createNotificationChannel(taskChannel)
             notificationManager.createNotificationChannel(runningChannel)
+            notificationManager.createNotificationChannel(downloadChannel)
         }
     }
 
@@ -159,5 +172,79 @@ class NotificationHelper @Inject constructor(
         val notificationManager = applicationContext
             .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(result.taskId.hashCode(), notification)
+    }
+
+    fun showDownloadNotification(modelName: String) {
+        Log.d(TAG, "Showing download notification for model: $modelName")
+
+        val intent = Intent(applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(applicationContext, NOTIFICATION_CHANNEL_DOWNLOAD)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Downloading model: $modelName")
+            .setContentText("0% complete")
+            .setProgress(100, 0, false)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .build()
+
+        val notificationManager = applicationContext
+            .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(NOTIFICATION_ID_DOWNLOAD, notification)
+    }
+
+    fun updateDownloadNotification(progress: Float, modelName: String) {
+        Log.d(TAG, "Updating download notification: $progress%")
+
+        val intent = Intent(applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val progressText = if (progress < 100f) {
+            "${progress.toInt()}% complete"
+        } else {
+            "Download complete"
+        }
+
+        val notification = NotificationCompat.Builder(applicationContext, NOTIFICATION_CHANNEL_DOWNLOAD)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Downloading model: $modelName")
+            .setContentText(progressText)
+            .setProgress(100, (progress * 100).toInt().coerceIn(0, 100), false)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setOngoing(progress < 100f)
+            .setOnlyAlertOnce(true)
+            .build()
+
+        val notificationManager = applicationContext
+            .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(NOTIFICATION_ID_DOWNLOAD, notification)
+    }
+
+    fun cancelDownloadNotification() {
+        Log.d(TAG, "Cancelling download notification")
+
+        val notificationManager = applicationContext
+            .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(NOTIFICATION_ID_DOWNLOAD)
     }
 }

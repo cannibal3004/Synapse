@@ -43,10 +43,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
     }
@@ -58,6 +54,12 @@ android {
             excludes += "/META-INF/INDEX.LIST"
             excludes += "/META-INF/io.netty.versions.properties"
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -93,8 +95,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
 
     // Hilt
-    implementation("com.google.dagger:hilt-android:2.55")
-    ksp("com.google.dagger:hilt-compiler:2.55")
+    implementation("com.google.dagger:hilt-android:2.56")
+    ksp("com.google.dagger:hilt-compiler:2.56")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
     // Retrofit
@@ -107,9 +109,9 @@ dependencies {
     implementation("com.google.code.gson:gson:2.12.1")
 
     // Room
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
+    implementation("androidx.room:room-runtime:2.7.0")
+    implementation("androidx.room:room-ktx:2.7.0")
+    ksp("androidx.room:room-compiler:2.7.0")
 
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.1.2")
@@ -144,6 +146,9 @@ dependencies {
 
     // NotificationCompat for task completion notifications
     implementation("androidx.core:core-ktx:1.15.0")
+
+    // LiteRT-LM for on-device LLM inference
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.10.2")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
