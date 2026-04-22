@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 import javax.inject.Singleton
 
 private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(name = "app_settings")
@@ -97,5 +98,21 @@ class SettingsDataRepository @javax.inject.Inject constructor(
                 preferences.remove(SettingsKeys.EXA_API_KEY)
             }
         }
+    }
+
+    suspend fun getApiKey(): String? {
+        return dataStore.data.map { it[SettingsKeys.API_KEY] }.first()
+    }
+
+    suspend fun getApiBaseUrl(): String? {
+        return dataStore.data.map { it[SettingsKeys.API_BASE_URL] }.first()
+    }
+
+    suspend fun getDefaultModel(): String? {
+        return dataStore.data.map { it[SettingsKeys.DEFAULT_MODEL] }.first()
+    }
+
+    suspend fun getSystemPrompt(): String? {
+        return dataStore.data.map { it[SettingsKeys.SYSTEM_PROMPT] }.first()
     }
 }

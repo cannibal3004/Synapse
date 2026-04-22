@@ -137,6 +137,14 @@ dependencies {
     // Accompanist
     implementation("com.google.accompanist:accompanist-permissions:0.36.0")
 
+    // WorkManager for scheduled tasks
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    implementation("androidx.hilt:hilt-work:1.2.0")
+    ksp("androidx.hilt:hilt-compiler:1.2.0")
+
+    // NotificationCompat for task completion notifications
+    implementation("androidx.core:core-ktx:1.15.0")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

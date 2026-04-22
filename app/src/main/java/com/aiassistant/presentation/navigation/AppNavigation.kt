@@ -19,17 +19,30 @@ import androidx.navigation.navArgument
 import com.aiassistant.presentation.screen.chat.ChatScreen
 import com.aiassistant.presentation.screen.conversation.ConversationListScreen
 import com.aiassistant.presentation.screen.settings.SettingsScreen
+import com.aiassistant.presentation.screen.tasks.TaskScreen
 import com.aiassistant.presentation.vm.ChatViewModel
 import com.aiassistant.presentation.vm.ConversationListViewModel
 import com.aiassistant.presentation.vm.SettingsViewModel
+import com.aiassistant.presentation.vm.TaskViewModel
 
 @Composable
 fun AppNavigation(
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    deepLinkType: String? = null,
+    deepLinkId: String? = null
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(deepLinkType, deepLinkId) {
+        if (deepLinkType == "EXECUTION_HISTORY" && deepLinkId != null) {
+            navController.navigate("tasks/deeplink/$deepLinkId") {
+                popUpTo(navController.graph.startDestinationId) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -82,6 +95,18 @@ fun AppNavigation(
                             navController.navigate("conversationList") {
                                 popUpTo("conversationList") { inclusive = true }
                             }
+                            scope.launch { drawerState.close() }
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    NavigationDrawerItem(
+                        label = { Text("Tasks") },
+                        icon = { Icon(Icons.Default.Schedule, contentDescription = null) },
+                        selected = false,
+                        onClick = {
+                            navController.navigate("tasks")
                             scope.launch { drawerState.close() }
                         }
                     )
@@ -143,6 +168,33 @@ fun AppNavigation(
                         },
                         onToggleDrawer = { scope.launch { drawerState.open() } },
                         viewModel = hiltViewModel()
+                    )
+                }
+                composable("tasks") {
+                    TaskScreen(
+                        onNavigateBack = {
+                            navController.popBackStack()
+                        },
+                        onToggleDrawer = { scope.launch { drawerState.open() } },
+                        viewModel = hiltViewModel()
+                    )
+                }
+                composable(
+                    route = "tasks/deeplink/{executionHistoryId}",
+                    arguments = listOf(
+                        navArgument("executionHistoryId") {
+                            type = NavType.StringType
+                        }
+                    )
+                ) { backStackEntry ->
+                    val executionHistoryId = backStackEntry.arguments?.getString("executionHistoryId")
+                    TaskScreen(
+                        onNavigateBack = {
+                            navController.popBackStack()
+                        },
+                        onToggleDrawer = { scope.launch { drawerState.open() } },
+                        viewModel = hiltViewModel(),
+                        executionHistoryId = executionHistoryId
                     )
                 }
             }

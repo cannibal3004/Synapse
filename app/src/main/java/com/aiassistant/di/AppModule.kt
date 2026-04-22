@@ -6,15 +6,20 @@ import com.aiassistant.data.api.OpenAIService
 import com.aiassistant.data.api.RetrofitClient
 import com.aiassistant.data.database.AppDatabase
 import com.aiassistant.data.repository.*
-import com.aiassistant.domain.repository.*
+import com.aiassistant.domain.repository.ChatApiRepository
+import com.aiassistant.domain.repository.MemoryRepository
+import com.aiassistant.domain.repository.TaskRepository
 import com.aiassistant.domain.service.VectorMathService
 import com.aiassistant.domain.tool.CalculatorTool
 import com.aiassistant.domain.tool.CodeInterpreterTool
 import com.aiassistant.domain.tool.DeviceInfoTool
+import com.aiassistant.domain.tool.ToolExecutor
 import com.aiassistant.domain.tool.WebPageFetcherTool
 import com.aiassistant.domain.tool.WeatherTool
 import com.aiassistant.domain.tool.WebSearchTool
+import com.aiassistant.data.scheduler.TaskScheduler
 import com.aiassistant.domain.usecase.MemorySearchUseCase
+import com.aiassistant.domain.usecase.TaskExecutor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -39,7 +44,8 @@ object AppModule {
             context,
             AppDatabase::class.java,
             "ai_assistant_database"
-        ).build()
+        ).fallbackToDestructiveMigration()
+            .build()
     }
 
     @Provides
@@ -53,6 +59,14 @@ object AppModule {
     @Provides
     @Singleton
     fun provideMemoryDao(database: AppDatabase) = database.memoryDao()
+
+    @Provides
+    @Singleton
+    fun provideScheduledTaskDao(database: AppDatabase) = database.scheduledTaskDao()
+
+    @Provides
+    @Singleton
+    fun provideTaskExecutionHistoryDao(database: AppDatabase) = database.taskExecutionHistoryDao()
 
     @Provides
     @Singleton
@@ -106,4 +120,16 @@ object AppModule {
     @Singleton
     fun provideSettingsDataRepository(@ApplicationContext context: Context) =
         SettingsDataRepository(context)
+
+    @Provides
+    @Singleton
+    fun provideTaskExecutor(
+        chatApiRepository: ChatApiRepository,
+        taskRepository: TaskRepository,
+        toolExecutor: ToolExecutor
+    ) = TaskExecutor(chatApiRepository, taskRepository, toolExecutor)
+
+    @Provides
+    @Singleton
+    fun provideTaskScheduler(@ApplicationContext context: Context) = TaskScheduler(context)
 }
