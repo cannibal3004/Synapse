@@ -73,6 +73,10 @@ class NotificationHelper @Inject constructor(
     }
 
     fun createTaskNotification(title: String, text: String, id: Int): androidx.work.ForegroundInfo {
+        return updateRunningTaskNotification(title, text, id)
+    }
+
+    fun updateRunningTaskNotification(title: String, text: String, id: Int): androidx.work.ForegroundInfo {
         val intent = Intent(applicationContext, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
@@ -95,6 +99,45 @@ class NotificationHelper @Inject constructor(
             .build()
 
         return androidx.work.ForegroundInfo(id, notification)
+    }
+
+    fun getRunningTaskNotificationId(taskId: String): Int {
+        return NOTIFICATION_CHANNEL_RUNNING_ID + (taskId.hashCode().toUInt().toInt() % 10000)
+    }
+
+    fun updateRunningTaskNotification(context: Context, taskId: String, title: String, text: String) {
+        val notificationId = getRunningTaskNotificationId(taskId)
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_RUNNING)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .build()
+
+        val notificationManager = context
+            .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(notificationId, notification)
+    }
+
+    fun cancelRunningTaskNotification(taskId: String) {
+        val notificationId = getRunningTaskNotificationId(taskId)
+        val notificationManager = applicationContext
+            .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(notificationId)
     }
 
     fun notifyTaskComplete(result: TaskExecutionResult, executionHistoryId: String) {

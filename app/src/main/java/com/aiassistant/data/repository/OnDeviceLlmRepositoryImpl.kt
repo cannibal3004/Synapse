@@ -6,6 +6,7 @@ import com.aiassistant.data.notification.NotificationHelper
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.model.ChatMessage
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
+import com.aiassistant.domain.tool.OnDeviceToolExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,19 +34,38 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
     private val modelDir: File by lazy {
         File(context.filesDir, OnDeviceLlmEngine.MODEL_DIR).apply { mkdirs() }
     }
+    private val toolExecutor = OnDeviceToolExecutor(context)
+
+    override suspend fun needsReinitialize(
+        modelPath: String,
+        systemPrompt: String?,
+        temperature: Float?,
+        topK: Int?,
+        topP: Float?,
+        useTools: Boolean
+    ): Boolean = engine.needsReinitialize(
+        modelPath = modelPath,
+        systemPrompt = systemPrompt,
+        temperature = temperature,
+        topK = topK,
+        topP = topP,
+        useTools = useTools
+    )
 
     override suspend fun initializeModel(
         modelPath: String,
         systemPrompt: String?,
         temperature: Float?,
         topK: Int?,
-        topP: Float?
+        topP: Float?,
+        useTools: Boolean
     ): Result<Unit> = engine.initializeModel(
         modelPath = modelPath,
         systemPrompt = systemPrompt,
         temperature = temperature,
         topK = topK,
-        topP = topP
+        topP = topP,
+        useTools = useTools
     ).onSuccess {
         _state.value = OnDeviceLlmEngine.EngineState(
             isReady = true,
@@ -65,8 +85,6 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
     }
 
     override fun chatStream(messages: List<ChatMessage>) = engine.chatStream(messages)
-
-    override suspend fun chat(messages: List<ChatMessage>): Result<String> = engine.chat(messages, null)
 
     override suspend fun downloadModel(
         huggingfaceRepo: String,

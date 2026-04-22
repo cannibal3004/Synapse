@@ -7,7 +7,9 @@ import com.aiassistant.data.api.RetrofitClient
 import com.aiassistant.data.database.AppDatabase
 import com.aiassistant.data.repository.*
 import com.aiassistant.domain.repository.ChatApiRepository
+import com.aiassistant.domain.repository.MessageRepository
 import com.aiassistant.domain.repository.MemoryRepository
+import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.repository.TaskRepository
 import com.aiassistant.domain.service.VectorMathService
 import com.aiassistant.domain.tool.CalculatorTool
@@ -128,8 +130,12 @@ object AppModule {
     fun provideTaskExecutor(
         chatApiRepository: ChatApiRepository,
         taskRepository: TaskRepository,
-        toolExecutor: ToolExecutor
-    ) = TaskExecutor(chatApiRepository, taskRepository, toolExecutor)
+        toolExecutor: ToolExecutor,
+        onDeviceLlmRepository: OnDeviceLlmRepository,
+        onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
+        messageRepository: MessageRepository,
+        @ApplicationContext context: Context
+    ) = TaskExecutor(chatApiRepository, taskRepository, toolExecutor, onDeviceLlmRepository, onDeviceLlmSettingsManager, messageRepository, context)
 
     @Provides
     @Singleton

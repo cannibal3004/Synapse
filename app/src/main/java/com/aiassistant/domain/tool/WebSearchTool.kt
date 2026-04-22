@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.aiassistant.domain.service.ToolManager
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import javax.inject.Inject
@@ -18,8 +19,6 @@ class WebSearchTool @Inject constructor(
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .build()
-
-    private val gson = com.google.gson.Gson()
 
     init {
         register()
@@ -42,7 +41,7 @@ class WebSearchTool @Inject constructor(
                 ),
                 executor = { arguments ->
                     runCatching {
-                        val args = gson.fromJson(arguments, Map::class.java)
+                        val args = JsonUtils.parseToJsonMap(arguments)
                         val query = args["query"] as? String ?: ""
                         performSearchSync(query)
                     }
@@ -65,6 +64,9 @@ class WebSearchTool @Inject constructor(
 
     fun performSearchSync(query: String): String {
         return try {
+            if (query.isBlank()) {
+                return "Error: No search query provided"
+            }
             val apiKey = getExaApiKey()
             if (apiKey.isNullOrEmpty()) {
                 return "Error: Exa API key not configured. Please add your Exa API key in Settings."
@@ -72,18 +74,12 @@ class WebSearchTool @Inject constructor(
 
             Log.d(TAG, "Searching with Exa AI for: $query")
 
-            val requestBody = """
-                {
-                    "query": "$query",
-                    "numResults": 5,
-                    "type": "auto",
-                    "contents": {
-                        "highlights": {
-                            "maxCharacters": 2000
-                        }
-                    }
-                }
-            """.trimIndent()
+            val requestBody = com.google.gson.Gson().toJson(mapOf(
+                "query" to query,
+                "numResults" to 5,
+                "startCitedByCount" to null,
+                "type" to "auto"
+            ))
 
             Log.d(TAG, "Request body: $requestBody")
 
@@ -92,7 +88,7 @@ class WebSearchTool @Inject constructor(
                 .header("Content-Type", "application/json")
                 .header("x-api-key", apiKey)
                 .header("Accept", "application/json")
-                .post(okhttp3.RequestBody.create("application/json".toMediaType(), requestBody))
+                .post(requestBody.toRequestBody("application/json".toMediaType()))
                 .build()
 
             val response = httpClient.newCall(request).execute()
@@ -106,7 +102,9 @@ class WebSearchTool @Inject constructor(
             }
 
             val json = com.google.gson.JsonParser.parseString(responseBody)
-            val resultsArray = json.asJsonObject?.get("results")?.asJsonArray ?: com.google.gson.JsonArray()
+            val resultsArray = json.asJsonObject?.get("results")?.asJsonArray 
+                ?: json.asJsonObject?.get("highlights")?.asJsonObject?.get("text")?.asJsonArray
+                ?: com.google.gson.JsonArray()
 
             if (resultsArray.isEmpty()) {
                 return "No search results found for: $query"

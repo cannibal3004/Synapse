@@ -28,9 +28,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -865,19 +867,28 @@ fun InputArea(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            OutlinedTextField(
+            TextField(
                 value = input,
                 onValueChange = onInputChange,
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Type a message...") },
                 keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Text
+                    keyboardType = KeyboardType.Text,
+                    capitalization = KeyboardCapitalization.Sentences
                 ),
                 keyboardActions = KeyboardActions(
                     onSend = { onSend() }
                 ),
                 maxLines = 4,
-                enabled = enabled
+                enabled = enabled,
+                colors = TextFieldDefaults.colors(
+                    focusedIndicatorColor = MaterialTheme.colorScheme.outline,
+                    unfocusedIndicatorColor = MaterialTheme.colorScheme.outline,
+                    disabledIndicatorColor = MaterialTheme.colorScheme.outline,
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent
+                )
             )
 
             Spacer(modifier = Modifier.width(8.dp))

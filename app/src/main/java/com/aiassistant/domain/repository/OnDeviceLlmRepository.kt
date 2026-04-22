@@ -9,17 +9,25 @@ interface OnDeviceLlmRepository {
 
     val state: StateFlow<OnDeviceLlmEngine.EngineState>
 
+    suspend fun needsReinitialize(
+        modelPath: String,
+        systemPrompt: String?,
+        temperature: Float?,
+        topK: Int?,
+        topP: Float?,
+        useTools: Boolean
+    ): Boolean
+
     suspend fun initializeModel(
         modelPath: String,
         systemPrompt: String? = null,
         temperature: Float? = null,
         topK: Int? = null,
-        topP: Float? = null
+        topP: Float? = null,
+        useTools: Boolean = true
     ): Result<Unit>
 
     fun chatStream(messages: List<ChatMessage>): Flow<OnDeviceLlmEngine.ChatEvent>
-
-    suspend fun chat(messages: List<ChatMessage>): Result<String>
 
     suspend fun downloadModel(
         huggingfaceRepo: String = OnDeviceLlmEngine.DEFAULT_HUGGINGFACE_REPO,

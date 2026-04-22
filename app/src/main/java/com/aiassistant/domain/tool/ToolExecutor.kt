@@ -1,6 +1,5 @@
 package com.aiassistant.domain.tool
 
-import com.google.gson.Gson
 import javax.inject.Inject
 
 class ToolExecutor @Inject constructor(
@@ -11,11 +10,10 @@ class ToolExecutor @Inject constructor(
     private val codeInterpreterTool: CodeInterpreterTool,
     private val deviceInfoTool: DeviceInfoTool
 ) {
-    private val gson = Gson()
 
     fun executeTool(name: String, arguments: String): String {
         return try {
-            val args = gson.fromJson(arguments, Map::class.java)
+            val args = JsonUtils.parseToJsonMap(arguments)
             
             when (name) {
                 "web_search" -> {

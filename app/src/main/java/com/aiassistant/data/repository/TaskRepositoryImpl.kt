@@ -51,7 +51,8 @@ class TaskRepositoryImpl @Inject constructor(
             systemPrompt = task.systemPrompt,
             model = task.model,
             conversationId = task.conversationId,
-            tags = task.tags.joinToString(",")
+            tags = task.tags.joinToString(","),
+            onDevice = task.onDevice
         )
         taskDao.insertTask(entity)
         return id
@@ -77,7 +78,8 @@ class TaskRepositoryImpl @Inject constructor(
             systemPrompt = task.systemPrompt,
             model = task.model,
             conversationId = task.conversationId,
-            tags = task.tags.joinToString(",")
+            tags = task.tags.joinToString(","),
+            onDevice = task.onDevice
         )
         taskDao.updateTask(entity)
     }
@@ -167,7 +169,8 @@ class TaskRepositoryImpl @Inject constructor(
             systemPrompt = systemPrompt,
             model = model,
             conversationId = conversationId,
-            tags = if (tags.isNotBlank()) tags.split(",") else emptyList()
+            tags = if (tags.isNotBlank()) tags.split(",") else emptyList(),
+            onDevice = onDevice
         )
     }
 

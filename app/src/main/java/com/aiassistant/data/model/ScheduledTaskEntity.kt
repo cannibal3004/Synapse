@@ -25,5 +25,6 @@ data class ScheduledTaskEntity(
     val systemPrompt: String? = null,
     val model: String? = null,
     val conversationId: String? = null,
-    val tags: String = ""
+    val tags: String = "",
+    val onDevice: Boolean = false
 )

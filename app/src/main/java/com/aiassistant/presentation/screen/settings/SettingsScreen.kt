@@ -33,8 +33,8 @@ fun SettingsScreen(
     var showSaveToast by remember { mutableStateOf(false) }
 
     var onDeviceEnabled by remember { mutableStateOf(settings.onDeviceSettings?.enabled ?: false) }
-    var onDeviceModelName by remember { mutableStateOf(settings.onDeviceSettings?.modelName ?: "gemma-3n-E2B-it-int4.litertlm") }
-    var onDeviceHuggingfaceRepo by remember { mutableStateOf(settings.onDeviceSettings?.huggingfaceRepo ?: "litert-community/gemma-3n-E2B-it-litert-lm") }
+    var onDeviceModelName by remember { mutableStateOf(settings.onDeviceSettings?.modelName ?: "gemma-4-E2B-it.litertlm") }
+    var onDeviceHuggingfaceRepo by remember { mutableStateOf(settings.onDeviceSettings?.huggingfaceRepo ?: "litert-community/gemma-4-E2B-it-litert-lm") }
     var onDeviceSystemPrompt by remember { mutableStateOf(settings.onDeviceSettings?.systemPrompt ?: "") }
 
     LaunchedEffect(settings) {
@@ -202,7 +202,7 @@ fun SettingsScreen(
                 value = onDeviceModelName,
                 onValueChange = { onDeviceModelName = it },
                 label = { Text("Model Name") },
-                placeholder = { Text("gemma-3n-E2B-it-int4.litertlm") },
+                placeholder = { Text("gemma-4-E2B-it.litertlm") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
@@ -213,7 +213,7 @@ fun SettingsScreen(
                 value = onDeviceHuggingfaceRepo,
                 onValueChange = { onDeviceHuggingfaceRepo = it },
                 label = { Text("HuggingFace Repo") },
-                placeholder = { Text("litert-community/gemma-3n-E2B-it-litert-lm") },
+                placeholder = { Text("litert-community/gemma-4-E2B-it-litert-lm") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )

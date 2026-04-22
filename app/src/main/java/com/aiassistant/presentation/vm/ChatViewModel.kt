@@ -19,7 +19,9 @@ import com.aiassistant.domain.repository.ChatApiRepository
 import com.aiassistant.domain.repository.ConversationRepository
 import com.aiassistant.domain.repository.MessageRepository
 import com.aiassistant.domain.service.ToolManager
+import com.aiassistant.domain.tool.OnDeviceToolExecutor
 import com.aiassistant.domain.tool.ToolExecutor
+import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.gson.Gson
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -27,7 +29,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectIndexed
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -72,6 +76,7 @@ class ChatViewModel @Inject constructor(
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private val gson = Gson()
+    private val onDeviceToolExecutor = OnDeviceToolExecutor(applicationContext)
 
     init {
         Log.d("ChatViewModel", "ViewModel initialized")
@@ -317,13 +322,27 @@ class ChatViewModel @Inject constructor(
             }
         }
 
-        val initResult = onDeviceLlmRepository.initializeModel(
+       val needsReinit = onDeviceLlmRepository.needsReinitialize(
             modelPath = modelPath,
             systemPrompt = onDeviceSettings.systemPrompt,
             temperature = onDeviceSettings.temperature,
             topK = onDeviceSettings.topK,
-            topP = onDeviceSettings.topP
+            topP = onDeviceSettings.topP,
+            useTools = true
         )
+
+        val initResult = if (needsReinit) {
+            onDeviceLlmRepository.initializeModel(
+                modelPath = modelPath,
+                systemPrompt = onDeviceSettings.systemPrompt,
+                temperature = onDeviceSettings.temperature,
+                topK = onDeviceSettings.topK,
+                topP = onDeviceSettings.topP,
+                useTools = true
+            )
+        } else {
+            Result.success(Unit)
+        }
 
         if (!initResult.isSuccess) {
             return "Error: Failed to initialize on-device model - ${initResult.exceptionOrNull()?.message}"
@@ -333,9 +352,30 @@ class ChatViewModel @Inject constructor(
             .filter { it.role != MessageRole.SYSTEM }
             .toMutableList()
 
-        val chatResult = onDeviceLlmRepository.chat(domainMessages)
+        var fullResponse = ""
+        var chatError: String? = null
 
-        return chatResult.getOrNull() ?: "Error: On-device model failed to respond"
+        withContext(Dispatchers.IO) {
+            onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
+                when (event) {
+                    is OnDeviceLlmEngine.ChatEvent.Chunk -> {
+                        fullResponse += event.text
+                    }
+                    is OnDeviceLlmEngine.ChatEvent.Done -> {
+                        fullResponse = event.response
+                    }
+                    is OnDeviceLlmEngine.ChatEvent.Error -> {
+                        chatError = event.error
+                    }
+                }
+            }
+        }
+
+        return if (chatError != null) {
+            "Error: On-device model failed to respond - $chatError"
+        } else {
+            fullResponse
+        }
     }
 
     private suspend fun getCloudResponse(

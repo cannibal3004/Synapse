@@ -501,7 +501,8 @@ private fun TaskExecutionDetailScreen(
 private fun TaskFormDialog(
     task: ScheduledTask?,
     onDismiss: () -> Unit,
-    onSave: (TaskFormData) -> Unit
+    onSave: (TaskFormData) -> Unit,
+    viewModel: com.aiassistant.presentation.vm.TaskViewModel = hiltViewModel()
 ) {
     var formData by remember {
         mutableStateOf(
@@ -513,11 +514,16 @@ private fun TaskFormDialog(
                 intervalMinutes = task?.intervalMinutes ?: 60,
                 shouldNotify = task?.shouldNotify ?: true,
                 systemPrompt = task?.systemPrompt,
-                model = task?.model
+                model = task?.model,
+                onDevice = task?.onDevice ?: false
             )
         )
     }
     var showCronHelp by remember { mutableStateOf(false) }
+    var lockState by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(task) {
+        lockState = viewModel.getOnDeviceLockState(formData.onDevice)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -610,6 +616,35 @@ private fun TaskFormDialog(
                         onCheckedChange = { formData = formData.copy(shouldNotify = it) }
                     )
                     Text("Notify when complete")
+                }
+
+              val effectiveLockState = lockState
+                val onDeviceLabel = when {
+                    effectiveLockState == true -> "Run on device (required when offline)"
+                    effectiveLockState == false -> "Run via API (required when online)"
+                    else -> "Run on device (offline)"
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Checkbox(
+                        checked = formData.onDevice,
+                        enabled = effectiveLockState == null,
+                        onCheckedChange = { formData = formData.copy(onDevice = it) }
+                    )
+                    Text(onDeviceLabel)
+                }
+
+                   if (effectiveLockState != null) {
+                    Text(
+                        text = if (effectiveLockState!!) "On-Device mode is enforced because On-Device is enabled and no API key is set."
+                        else "Cloud API mode is enforced because On-Device mode is disabled and an API key is available.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
         },

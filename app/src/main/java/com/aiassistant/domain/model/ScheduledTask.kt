@@ -24,7 +24,8 @@ data class ScheduledTask(
     val systemPrompt: String? = null,
     val model: String? = null,
     val conversationId: String? = null,
-    val tags: List<String> = emptyList()
+    val tags: List<String> = emptyList(),
+    val onDevice: Boolean = false
 ) : Parcelable
 
 enum class ScheduleType {

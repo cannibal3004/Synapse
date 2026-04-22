@@ -14,8 +14,6 @@ class WeatherTool @Inject constructor() {
         .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
-    private val gson = com.google.gson.Gson()
-
     init {
         register()
     }
@@ -42,7 +40,7 @@ class WeatherTool @Inject constructor() {
                 ),
                 executor = { arguments ->
                     runCatching {
-                        val args = gson.fromJson(arguments, Map::class.java)
+                        val args = JsonUtils.parseToJsonMap(arguments)
                         val city = args["city"] as? String ?: ""
                         val units = args["units"] as? String ?: "celsius"
                         fetchWeather(city, units)

@@ -3,6 +3,8 @@ package com.aiassistant.presentation.vm
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aiassistant.data.llm.OnDeviceLlmSettingsManager
+import com.aiassistant.data.repository.SettingsDataRepository
 import com.aiassistant.data.scheduler.TaskScheduler
 import com.aiassistant.domain.model.ScheduleType
 import com.aiassistant.domain.model.ScheduledTask
@@ -40,7 +42,8 @@ data class TaskFormData(
     val shouldNotify: Boolean = true,
     val systemPrompt: String? = null,
     val model: String? = null,
-    val tags: String = ""
+    val tags: String = "",
+    val onDevice: Boolean = false
 ) {
     fun isValid(): Boolean {
         return title.isNotBlank() && prompt.isNotBlank()
@@ -50,7 +53,9 @@ data class TaskFormData(
 @HiltViewModel
 class TaskViewModel @Inject constructor(
     private val taskRepository: TaskRepository,
-    private val taskScheduler: TaskScheduler
+    private val taskScheduler: TaskScheduler,
+    private val settingsRepository: SettingsDataRepository,
+    private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TaskUiState())
@@ -174,6 +179,9 @@ class TaskViewModel @Inject constructor(
 
                 val existingTask = _uiState.value.editingTask
 
+                val lockedOnDevice = getOnDeviceLockState(existingTask?.onDevice ?: formData.onDevice)
+                val effectiveOnDevice = lockedOnDevice ?: formData.onDevice
+
                 val task = ScheduledTask(
                     id = existingTask?.id ?: UUID.randomUUID().toString(),
                     title = formData.title.trim(),
@@ -193,7 +201,8 @@ class TaskViewModel @Inject constructor(
                     systemPrompt = formData.systemPrompt,
                     model = formData.model,
                     conversationId = existingTask?.conversationId,
-                    tags = if (formData.tags.isNotBlank()) formData.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() } else emptyList()
+                    tags = if (formData.tags.isNotBlank()) formData.tags.split(",").map { it.trim() }.filter { it.isNotEmpty() } else emptyList(),
+                    onDevice = effectiveOnDevice
                 )
 
                 if (existingTask != null) {
@@ -376,6 +385,20 @@ class TaskViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.e("TaskViewModel", "Error loading execution history for deep link", e)
             }
+        }
+    }
+
+    suspend fun getOnDeviceLockState(currentOnDevice: Boolean): Boolean? {
+        val globalOnDeviceEnabled = onDeviceLlmSettingsManager.getSettings().enabled
+        val apiKey = settingsRepository.getApiKey()
+
+        return when {
+            // Global On-Device mode enabled + no API key → force on-device
+            globalOnDeviceEnabled && apiKey.isNullOrBlank() -> true
+            // Global On-Device mode disabled + API key exists → force cloud
+            !globalOnDeviceEnabled && !apiKey.isNullOrBlank() -> false
+            // Both available or neither available → allow toggle
+            else -> null
         }
     }
 
