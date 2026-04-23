@@ -15,6 +15,7 @@ import com.aiassistant.domain.service.VectorMathService
 import com.aiassistant.domain.tool.CalculatorTool
 import com.aiassistant.domain.tool.CodeInterpreterTool
 import com.aiassistant.domain.tool.DeviceInfoTool
+import com.aiassistant.domain.tool.TermuxShellTool
 import com.aiassistant.domain.tool.ToolExecutor
 import com.aiassistant.domain.tool.WebPageFetcherTool
 import com.aiassistant.domain.tool.WeatherTool
@@ -115,6 +116,11 @@ object AppModule {
     @Singleton
     fun provideDeviceInfoTool(@ApplicationContext context: android.content.Context) =
         DeviceInfoTool(context)
+
+    @Provides
+    @Singleton
+    fun provideTermuxShellTool(@ApplicationContext context: Context) =
+        TermuxShellTool(context)
 
     @Provides
     @Singleton

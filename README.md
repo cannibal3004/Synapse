@@ -6,6 +6,7 @@ A modern Android AI assistant app built with Kotlin and Jetpack Compose that con
 
 - **OpenAI-Compatible API**: Connect to any OpenAI-compatible API server (OpenAI, Azure, local models like Ollama, LM Studio, etc.)
 - **Tool Calling**: The AI can call tools like web search, code interpreter, calculator, weather, and more
+- **Termux Shell**: Execute Linux commands on-device via Termux (ping, curl, file operations, Python scripts, etc.)
 - **Web Search**: Built-in web search tool using Exa.ai
 - **Vector Memory**: Embedding-based memory system with similarity search
 - **Modern UI**: Clean Material Design 3 interface with Jetpack Compose
@@ -29,7 +30,7 @@ The app follows Clean Architecture principles with three layers:
 - **Repositories**: Interfaces for data access
 - **Use Cases**: SendChatMessageUseCase, MemorySearchUseCase
 - **Services**: ToolManager, VectorMathService
-- **Tools**: Calculator, Code Interpreter, Web Search, Weather, Device Info, Web Page Fetcher
+- **Tools**: Calculator, Code Interpreter, Web Search, Weather, Device Info, Web Page Fetcher, Termux Shell
 
 ### Data Layer (`data/`)
 - **API**: Retrofit client for OpenAI-compatible endpoints
@@ -59,6 +60,44 @@ Go to Settings to configure:
 - **System Prompt**: Custom instructions for the AI
 - **Embedding Model**: e.g., `text-embedding-3-small`
 - **Exa API Key**: For web search (optional)
+
+### Termux Shell Setup (Optional)
+
+The app can execute Linux commands on your device via Termux. This enables network diagnostics (ping, curl, wget, nslookup), file operations, system info, text processing, and running Python/Node scripts.
+
+**Setup:**
+
+1. **Install Termux** from [F-Droid](https://f-droid.org/packages/com.termux/) or [GitHub Releases](https://github.com/termux/termux-app/releases) (Play Store version is deprecated)
+2. **Open Termux** and run:
+   ```bash
+   termux-setup-storage
+   ```
+3. **Enable external apps** — create/edit `~/.termux/termux.properties`:
+   ```bash
+   nano ~/.termux/termux.properties
+   ```
+   Add the line:
+   ```
+   allow-external-apps = true
+   ```
+4. **Restart Termux** — close and reopen the app
+5. **Grant permission** — open Synapse Settings, tap "Open App Settings", go to Additional permissions, and enable "Run commands in Termux environment"
+
+**Usage:**
+
+Ask the AI to run commands naturally:
+- "Ping 8.8.8.8 four times"
+- "Check my network connectivity with curl"
+- "List files in my home directory"
+- "Run a Python script to calculate fibonacci"
+- "Check disk usage with df -h"
+
+**Limitations:**
+
+- Commands timeout after 30s (configurable up to 120s)
+- Interactive commands (e.g., `vim`, `nano`) will hang
+- Long-running daemons are not supported
+- Requires Termux to be installed and configured
 
 ## Project Structure
 

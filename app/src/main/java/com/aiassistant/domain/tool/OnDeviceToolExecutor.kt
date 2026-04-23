@@ -1,11 +1,17 @@
 package com.aiassistant.domain.tool
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Environment
 import android.util.DisplayMetrics
+import androidx.core.content.ContextCompat
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.gson.Gson
 import okhttp3.MediaType.Companion.toMediaType
@@ -962,6 +968,349 @@ class DeviceInfoToolImpl(
     }
 }
 
+class TermuxShellToolImpl(
+    private val context: Context
+) : OpenApiTool {
+
+   private class PendingResult(
+        val latch: CountDownLatch,
+        val stdout: StringBuilder,
+        val stderr: StringBuilder,
+        var exitCode: Int = -1,
+        var err: Int = 0,
+        var errmsg: String? = null
+    )
+    private val pendingResults = ConcurrentHashMap<Int, PendingResult>()
+    private val completedResults = ConcurrentHashMap<Int, String>()
+    private val executionId = AtomicInteger(0)
+    private val resultReceiver = TermuxResultReceiver()
+
+    init {
+        val filter = IntentFilter(RESULT_ACTION)
+        ContextCompat.registerReceiver(
+            context,
+            resultReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    inner class TermuxResultReceiver : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            val execId = intent.getIntExtra(EXTRA_EXECUTION_ID, -1)
+            if (execId == -1) return
+
+            val entry = pendingResults[execId] ?: return
+
+            val resultBundle = intent.getBundleExtra(EXTRA_PLUGIN_RESULT_BUNDLE)
+                ?: return
+
+            val stdout = resultBundle.getString(EXTRA_PLUGIN_RESULT_BUNDLE_STDOUT, "")
+            val stderr = resultBundle.getString(EXTRA_PLUGIN_RESULT_BUNDLE_STDERR, "")
+            val exitCode = resultBundle.getInt(EXTRA_PLUGIN_RESULT_BUNDLE_EXIT_CODE, -1)
+            val err = resultBundle.getInt(EXTRA_PLUGIN_RESULT_BUNDLE_ERR, 0)
+            val errmsg = resultBundle.getString(EXTRA_PLUGIN_RESULT_BUNDLE_ERRMSG, "")
+
+            android.util.Log.d("TermuxShellTool", "Bundle: stdout=${stdout.take(80)} stderr=${stderr.take(80)} exitCode=$exitCode err=$err errmsg=$errmsg")
+
+            if (!stdout.isNullOrBlank()) entry.stdout.append(stdout)
+            if (!stderr.isNullOrBlank()) entry.stderr.append(stderr)
+            if (exitCode >= 0) entry.exitCode = exitCode
+            if (err != 0) entry.err = err
+            if (!errmsg.isNullOrBlank()) entry.errmsg = errmsg
+
+            if (exitCode >= 0) {
+                val output = buildString {
+                    val hasRealError = entry.err != 0 && (!entry.errmsg.isNullOrBlank() || entry.exitCode != 0)
+                    if (hasRealError) {
+                        append("Error: Termux execution failed (err=${entry.err})")
+                        if (!entry.errmsg.isNullOrBlank()) append(": ${entry.errmsg}")
+                        if (entry.stderr.isNotEmpty()) append("\nSTDERR: ${entry.stderr}")
+                        if (entry.stdout.isNotEmpty()) append("\nSTDOUT: ${entry.stdout}")
+                        append("\n\nTroubleshooting:\n")
+                        append("1. Ensure 'allow-external-apps = true' in ~/.termux/termux.properties\n")
+                        append("2. Grant RUN_COMMAND permission: Settings > Apps > Synapse > Additional permissions\n")
+                        append("3. Restart Termux after changes")
+                    } else {
+                        if (entry.stdout.isNotEmpty()) append(entry.stdout)
+                        if (entry.stderr.isNotEmpty()) {
+                            if (isNotEmpty()) append("\n")
+                            append("STDERR:\n${entry.stderr}")
+                        }
+                        append("\n\nExit code: ${entry.exitCode}")
+                    }
+                }
+                completedResults[execId] = output
+                pendingResults.remove(execId)
+                android.util.Log.d("TermuxShellTool", "Final result (execId=$execId, length=${output.length})")
+                entry.latch.countDown()
+            }
+        }
+    }
+
+    companion object {
+        private const val EXTRA_EXECUTION_ID = "com.aiassistant.termux.execution_id"
+
+        private const val TERMUX_PACKAGE = "com.termux"
+        private const val TERMUX_SERVICE_NAME = "com.termux.app.RunCommandService"
+        private const val PERMISSION_RUN_COMMAND = "com.termux.permission.RUN_COMMAND"
+
+        private const val TERMUX_HOME_DIR = "/data/data/com.termux/files/home"
+        private const val TERMUX_PREFIX_DIR = "/data/data/com.termux/files/usr"
+        private const val TERMUX_BIN_DIR = "/data/data/com.termux/files/usr/bin"
+
+        private const val ACTION_RUN_COMMAND = "com.termux.RUN_COMMAND"
+        private const val EXTRA_COMMAND_PATH = "com.termux.RUN_COMMAND_PATH"
+        private const val EXTRA_ARGUMENTS = "com.termux.RUN_COMMAND_ARGUMENTS"
+        private const val EXTRA_BACKGROUND = "com.termux.RUN_COMMAND_BACKGROUND"
+        private const val EXTRA_STDIN = "com.termux.RUN_COMMAND_STDIN"
+        private const val EXTRA_WORKDIR = "com.termux.RUN_COMMAND_WORKDIR"
+        private const val EXTRA_PENDING_INTENT = "com.termux.RUN_COMMAND_PENDING_INTENT"
+
+        private const val EXTRA_PLUGIN_RESULT_BUNDLE = "result"
+        private const val EXTRA_PLUGIN_RESULT_BUNDLE_STDOUT = "stdout"
+        private const val EXTRA_PLUGIN_RESULT_BUNDLE_STDERR = "stderr"
+        private const val EXTRA_PLUGIN_RESULT_BUNDLE_EXIT_CODE = "exitCode"
+        private const val EXTRA_PLUGIN_RESULT_BUNDLE_ERR = "err"
+        private const val EXTRA_PLUGIN_RESULT_BUNDLE_ERRMSG = "errmsg"
+
+        private const val RESULT_ACTION = "com.aiassistant.TERMUX_RESULT"
+        private const val DEFAULT_TIMEOUT_MS = 30_000L
+        private const val MAX_TIMEOUT_MS = 120_000L
+    }
+
+    override fun getToolDescriptionJsonString(): String = """
+        {
+          "name": "termux_shell",
+          "description": "Execute commands in a full Linux shell (Termux). This gives you access to a complete Linux environment on the device. Use this for: network diagnostics (ping, curl, wget, nslookup, dig, traceroute, netstat, ss), file operations (ls, cat, grep, find, cp, mv, rm, mkdir, tar, zip, unzip, diff, wc, head, tail), system info (uname, df, free, top, ps, whoami, id, hostname, uptime), text processing (sed, awk, sort, uniq, tr, cut, xargs), package management (pkg, apt), Python/Node scripts, and any other Linux command-line task. This is a powerful tool for diagnosing issues, fetching data, processing files, and running scripts. Commands run synchronously with a timeout (default 30s, max 120s). Avoid long-running or interactive commands that would block indefinitely.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The interpreter to use. Default: 'bash'. Use 'python3', 'node' etc. for specific interpreters."
+              },
+              "shell_command": {
+                "type": "string",
+                "description": "REQUIRED: The shell command to run. Passed to 'bash -c'. Examples: 'ping -c 4 8.8.8.8', 'curl -s https://api.example.com', 'ls -la /sdcard', 'grep -r \"error\" *.log', 'python3 -c \"import json; print(json.dumps({\\\"test\\\": 1}))\"'."
+              },
+              "script": {
+                "type": "string",
+                "description": "Alternative to shell_command: multi-line script content passed via stdin. Use for complex Python/Node scripts."
+              },
+              "workdir": {
+                "type": "string",
+                "description": "Working directory. Defaults to ~. Use ~/path or /absolute/path"
+              },
+              "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds. Default: 30, max: 120"
+              }
+            },
+            "required": ["shell_command"]
+          }
+        }
+    """.trimIndent()
+
+    override fun execute(paramsJsonString: String): String {
+        return try {
+            val params = JsonUtils.parseToJsonMap(paramsJsonString)
+            val command = params["command"] as? String ?: "bash"
+            val shellCommand = params["shell_command"] as? String
+            val script = params["script"] as? String
+            val workdir = params["workdir"] as? String
+            val timeoutSeconds = (params["timeout"] as? Number)?.toInt() ?: 30
+
+            if (!shellCommand.isNullOrBlank()) {
+                val knownShells = setOf("bash", "sh", "zsh", "dash")
+                val shell = knownShells.find { command.lowercase() == it } ?: "bash"
+                android.util.Log.d("TermuxShellTool", "Executing: cmd=$shell args=-c $shellCommand workdir=$workdir timeout=${timeoutSeconds}s")
+                return executeCommand(shell, "-c $shellCommand", null, workdir, timeoutSeconds)
+            }
+
+            if (!script.isNullOrBlank()) {
+                android.util.Log.d("TermuxShellTool", "Executing: cmd=$command script=${script.length} chars workdir=$workdir timeout=${timeoutSeconds}s")
+                return executeCommand(command, "", script, workdir, timeoutSeconds)
+            }
+
+            com.google.gson.Gson().toJson(mapOf("result" to "Error: Missing 'shell_command' or 'script' parameter. Provide a command to run."))
+        } catch (e: Exception) {
+            com.google.gson.Gson().toJson(mapOf("result" to "Error: ${e.message}"))
+        }
+    }
+
+    private fun executeCommand(
+        command: String,
+        argumentsStr: String,
+        script: String?,
+        workdir: String?,
+        timeoutSeconds: Int
+    ): String {
+        if (!isTermuxInstalled()) {
+            return "Error: Termux is not installed. Install Termux from F-Droid or GitHub, then grant the RUN_COMMAND permission to this app."
+        }
+
+        if (!hasRunCommandPermission()) {
+            return "Error: RUN_COMMAND permission not granted. Go to Android Settings > Apps > Synapse > Additional permissions and enable 'Run commands in Termux environment'."
+        }
+
+        val timeout = (timeoutSeconds.coerceIn(1, 120) * 1000L).coerceAtMost(MAX_TIMEOUT_MS)
+
+            val cmdPath = resolveCommandPath(command)
+        val cmdArgs: Array<String> = if (argumentsStr.isNotBlank()) {
+            val trimmed = argumentsStr.trim()
+            if (trimmed.startsWith("-c ")) {
+                arrayOf("-c", trimmed.substring(3))
+            } else {
+                arrayOf(trimmed)
+            }
+        } else {
+            emptyArray()
+        }
+
+        android.util.Log.d("TermuxShellTool", "cmdPath=$cmdPath cmdArgs=${cmdArgs.contentToString()}")
+
+        val id = executionId.incrementAndGet()
+        val latch = CountDownLatch(1)
+        pendingResults[id] = PendingResult(latch, StringBuilder(), StringBuilder())
+
+        val intent = buildIntent(cmdPath, cmdArgs, script, workdir, id)
+        android.util.Log.d("TermuxShellTool", "Starting Termux service (id=$id)")
+
+        try {
+            context.startService(intent)
+            android.util.Log.d("TermuxShellTool", "Service started, awaiting result (timeout=${timeout}ms)")
+        } catch (e: Exception) {
+            pendingResults.remove(id)
+            android.util.Log.e("TermuxShellTool", "Failed to start service: ${e.message}")
+            return "Error: Failed to start Termux service: ${e.message}"
+        }
+
+        val completed = latch.await(timeout, TimeUnit.MILLISECONDS)
+        if (!completed) {
+            pendingResults.remove(id)
+            android.util.Log.e("TermuxShellTool", "Timeout after ${timeoutSeconds}s (id=$id)")
+            return "Error: Command timed out after ${timeoutSeconds}s"
+        }
+
+        android.util.Log.d("TermuxShellTool", "Result received (id=$id)")
+        return completedResults.remove(id) ?: "Error: No result for execution $id"
+    }
+
+    private fun buildIntent(
+        commandPath: String,
+        arguments: Array<String>,
+        stdin: String?,
+        workdir: String?,
+        id: Int
+    ): Intent {
+        val intent = Intent().apply {
+            setClassName(TERMUX_PACKAGE, TERMUX_SERVICE_NAME)
+            action = ACTION_RUN_COMMAND
+            putExtra(EXTRA_COMMAND_PATH, commandPath)
+            putExtra(EXTRA_ARGUMENTS, arguments)
+            putExtra(EXTRA_BACKGROUND, true)
+        }
+
+        if (!stdin.isNullOrBlank()) {
+            intent.putExtra(EXTRA_STDIN, stdin)
+        }
+        if (!workdir.isNullOrBlank()) {
+            intent.putExtra(EXTRA_WORKDIR, workdir)
+        }
+
+        val resultIntent = Intent(RESULT_ACTION).apply {
+            putExtra(EXTRA_EXECUTION_ID, id)
+            setPackage(context.packageName)
+        }
+
+        val flags = android.app.PendingIntent.FLAG_ONE_SHOT or
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) android.app.PendingIntent.FLAG_MUTABLE else 0)
+
+        val pendingIntent = android.app.PendingIntent.getBroadcast(
+            context,
+            id,
+            resultIntent,
+            flags
+        )
+        intent.putExtra(EXTRA_PENDING_INTENT, pendingIntent)
+
+        return intent
+    }
+
+    private fun parseQuotedArguments(str: String): List<String> {
+        val args = mutableListOf<String>()
+        var i = 0
+        while (i < str.length) {
+            if (str[i] == ' ' || str[i] == '\t') {
+                i++
+                continue
+            }
+            if (str[i] == '"') {
+                var arg = ""
+                i++
+                while (i < str.length && str[i] != '"') {
+                    if (str[i] == '\\' && i + 1 < str.length) {
+                        arg += str[++i]
+                    } else {
+                        arg += str[i]
+                    }
+                    i++
+                }
+                i++ // skip closing quote
+                args.add(arg)
+            } else if (str[i] == '\'') {
+                var arg = ""
+                i++
+                while (i < str.length && str[i] != '\'') {
+                    arg += str[i]
+                    i++
+                }
+                i++ // skip closing quote
+                args.add(arg)
+            } else {
+                var arg = ""
+                while (i < str.length && str[i] != ' ' && str[i] != '\t') {
+                    if (str[i] == '\\' && i + 1 < str.length && (str[i + 1] == '"' || str[i + 1] == '\\' || str[i + 1] == ' ')) {
+                        arg += str[++i]
+                    } else {
+                        arg += str[i]
+                    }
+                    i++
+                }
+                args.add(arg)
+            }
+        }
+        return args
+    }
+
+    private fun resolveCommandPath(command: String): String {
+        return when {
+            command.startsWith("/") -> command
+            command.startsWith("~") -> command.replaceFirst("~", TERMUX_HOME_DIR)
+            command.startsWith("\$PREFIX") -> command.replaceFirst("\$PREFIX", TERMUX_PREFIX_DIR)
+            else -> "$TERMUX_BIN_DIR/$command"
+        }
+    }
+
+    private fun isTermuxInstalled(): Boolean {
+        return try {
+            context.packageManager.getPackageInfo(TERMUX_PACKAGE, 0)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun hasRunCommandPermission(): Boolean {
+        return context.checkPermission(
+            PERMISSION_RUN_COMMAND,
+            android.os.Process.myPid(),
+            android.os.Process.myUid()
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+}
+
 class OnDeviceToolExecutor(
     private val context: Context
 ) {
@@ -971,6 +1320,7 @@ class OnDeviceToolExecutor(
     private val webPageFetcherTool = WebPageFetcherToolImpl()
     private val codeInterpreterTool = CodeInterpreterToolImpl()
     private val deviceInfoTool = DeviceInfoToolImpl(context)
+    private val termuxShellTool = TermuxShellToolImpl(context)
 
     fun getAllTools(): List<OpenApiTool> = listOf(
         calculatorTool,
@@ -978,6 +1328,7 @@ class OnDeviceToolExecutor(
         weatherTool,
         webPageFetcherTool,
         codeInterpreterTool,
-        deviceInfoTool
+        deviceInfoTool,
+        termuxShellTool
     )
 }

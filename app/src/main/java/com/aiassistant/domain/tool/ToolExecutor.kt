@@ -8,7 +8,8 @@ class ToolExecutor @Inject constructor(
     private val weatherTool: WeatherTool,
     private val webPageFetcherTool: WebPageFetcherTool,
     private val codeInterpreterTool: CodeInterpreterTool,
-    private val deviceInfoTool: DeviceInfoTool
+    private val deviceInfoTool: DeviceInfoTool,
+    private val termuxShellTool: TermuxShellTool
 ) {
 
     fun executeTool(name: String, arguments: String): String {
@@ -42,6 +43,14 @@ class ToolExecutor @Inject constructor(
                 "device_info" -> {
                     val category = args["category"] as? String ?: "all"
                     deviceInfoTool.getDeviceInfo(category)
+                }
+                "termux_shell" -> {
+                    val command = args["command"] as? String ?: ""
+                    val arguments = args["arguments"] as? String ?: ""
+                    val script = args["script"] as? String
+                    val workdir = args["workdir"] as? String
+                    val timeout = (args["timeout"] as? Number)?.toInt() ?: 30
+                    termuxShellTool.executeCommand(command, arguments, script, workdir, timeout)
                 }
                 else -> "Error: Unknown tool '$name'"
             }

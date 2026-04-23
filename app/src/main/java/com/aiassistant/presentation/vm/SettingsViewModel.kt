@@ -7,8 +7,10 @@ import androidx.lifecycle.viewModelScope
 import com.aiassistant.data.llm.OnDeviceLlmSettingsManager
 import com.aiassistant.data.repository.SettingsDataRepository
 import com.aiassistant.domain.llm.OnDeviceLlmSettings
+import com.aiassistant.domain.tool.TermuxShellTool
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -49,8 +51,11 @@ When a tool returns an error:
 class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsDataRepository,
     private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
+    private val termuxShellTool: TermuxShellTool,
     @ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
+
+    val termuxStatus = MutableStateFlow(termuxShellTool.getStatus())
 
     private val sharedPreferences: SharedPreferences by lazy {
         applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE)

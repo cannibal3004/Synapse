@@ -1,6 +1,11 @@
 package com.aiassistant.presentation.screen.settings
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -11,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aiassistant.domain.llm.OnDeviceLlmSettings
@@ -228,6 +234,74 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 maxLines = 3
             )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            val termuxStatus by viewModel.termuxStatus.collectAsState()
+            val context = LocalContext.current
+            val settingsLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.StartActivityForResult()
+            ) { }
+
+            Text(
+                text = "Termux",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Termux Shell",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Text(
+                            text = if (termuxStatus.ready) "Ready"
+                                   else if (termuxStatus.installed) "Permission needed"
+                                   else "Not installed",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (termuxStatus.ready) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = if (!termuxStatus.installed) {
+                            "Termux is not installed. Install from F-Droid or GitHub."
+                        } else if (!termuxStatus.permissionGranted) {
+                            "Grant RUN_COMMAND permission in Additional permissions. Also set allow-external-apps = true in ~/.termux/termux.properties"
+                        } else {
+                            "Shell commands and scripts can be executed via Termux."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    Button(
+                        onClick = {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            settingsLauncher.launch(intent)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Settings, null, modifier = Modifier.padding(end = 8.dp))
+                        Text("Open App Settings")
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(32.dp))
 
