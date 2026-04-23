@@ -95,6 +95,7 @@ class OnDeviceLlmEngine(
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
                 backend = Backend.CPU(),
+                maxNumTokens = 32768,
                 cacheDir = context.cacheDir.path,
             )
 
