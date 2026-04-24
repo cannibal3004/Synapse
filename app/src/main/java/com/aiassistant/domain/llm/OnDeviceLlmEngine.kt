@@ -1,17 +1,18 @@
 package com.aiassistant.domain.llm
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import com.aiassistant.domain.model.ChatMessage
 import com.aiassistant.domain.model.MessageRole
 import com.aiassistant.domain.tool.OnDeviceToolExecutor
 import com.google.ai.edge.litertlm.*
 import com.google.ai.edge.litertlm.Backend
-import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import org.mozilla.javascript.NativeArray
 import org.mozilla.javascript.NativeObject
@@ -44,8 +45,6 @@ class OnDeviceLlmEngine(
     private var currentTopK: Int? = null
     private var currentTopP: Float? = null
     private var currentUseTools: Boolean = true
-  
-    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
     fun getState(): EngineState {
         val convAlive = conversation?.isAlive == true
@@ -75,7 +74,7 @@ class OnDeviceLlmEngine(
             useTools != currentUseTools
     }
 
-    @OptIn(ExperimentalApi::class)
+   @OptIn(ExperimentalApi::class)
     suspend fun initializeModel(
         modelPath: String,
         systemPrompt: String?,
@@ -92,11 +91,10 @@ class OnDeviceLlmEngine(
                 return@withContext Result.failure(IllegalStateException("Model file not found or empty: $modelPath"))
             }
 
-            Log.d("OnDeviceLlmEngine", "Loading model from: $modelPath, useTools=$useTools")
-            ExperimentalFlags.enableSpeculativeDecoding = true
+          Log.d("OnDeviceLlmEngine", "Loading model from: $modelPath, useTools=$useTools")
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
-                backend = Backend.GPU(),
+                backend = Backend.CPU(),
                 maxNumTokens = 16384,
                 cacheDir = context.cacheDir.path,
             )
@@ -140,23 +138,47 @@ class OnDeviceLlmEngine(
         }
     }
 
-    fun chatStream(messages: List<ChatMessage>): Flow<ChatEvent> = kotlinx.coroutines.flow.flow {
-        val conv = conversation
-        if (conv == null) {
+    @OptIn(ExperimentalApi::class)
+    fun resetConversation() {
+        Log.d("OnDeviceLlmEngine", "Resetting conversation state")
+        closeConversation()
+        engine?.let { eng ->
+            val tempFloat: Float = currentTemperature ?: 0.8f
+            val topPFloat: Float = currentTopP ?: 0.95f
+            val temp: Double = tempFloat.toDouble()
+            val topPVal: Double = topPFloat.toDouble()
+            val topKVal: Int = currentTopK ?: 10
+
+            val samplerConfig = SamplerConfig(
+                topK = topKVal,
+                topP = topPVal,
+                temperature = temp,
+            )
+
+            val conversationConfig = ConversationConfig(
+                systemInstruction = currentSystemPrompt?.let { Contents.of(it) },
+                samplerConfig = samplerConfig,
+                tools = if (currentUseTools) OnDeviceToolExecutor(context).getAllTools().map { tool(it) } else emptyList(),
+                automaticToolCalling = false,
+            )
+
+            conversation = eng.createConversation(conversationConfig)
+        }
+    }
+
+    fun chatStream(messages: List<ChatMessage>): Flow<ChatEvent> = flow {
+        val conv = conversation ?: run {
             emit(ChatEvent.Error("Model not initialized"))
             return@flow
         }
 
-        val lastUserMessage = messages.lastOrNull { it.role == MessageRole.USER }
-        if (lastUserMessage == null) {
+        val lastUserMessage = messages.lastOrNull { it.role == MessageRole.USER } ?: run {
             emit(ChatEvent.Error("No user message found"))
             return@flow
         }
 
         val fullText = lastUserMessage.content
         Log.d("OnDeviceLlmEngine", "Starting chat stream for: ${fullText.take(50)}...")
-
-        val isMainThread = Looper.myLooper() == Looper.getMainLooper()
 
         try {
             var currentText = fullText
@@ -166,46 +188,37 @@ class OnDeviceLlmEngine(
             var lastResponse: com.google.ai.edge.litertlm.Message? = null
 
             do {
-                Log.d("OnDeviceLlmEngine", "Round $round: sending message (mainThread=$isMainThread)")
-                
-                val response = if (isMainThread) {
-                    conv.sendMessage(currentText)
-                } else {
-                    val latch = java.util.concurrent.CountDownLatch(1)
-                    var result: com.google.ai.edge.litertlm.Message? = null
-                    var exception: Exception? = null
-                    
-                    mainHandler.post {
-                        try {
-                            result = conv.sendMessage(currentText)
-                        } catch (e: Exception) {
-                            exception = e
-                        } finally {
-                            latch.countDown()
+                Log.d("OnDeviceLlmEngine", "Round $round: sending message async")
+                var roundHasToolCalls = false
+                val responses = conv.sendMessageAsync(currentText).toList()
+                lastResponse = responses.lastOrNull()
+
+                for (response in responses) {
+                    val textParts = response.contents.contents.filterIsInstance<Content.Text>()
+                    for (textPart in textParts) {
+                        if (textPart.text.isNotBlank()) {
+                            emit(ChatEvent.Chunk(textPart.text))
+                            finalResponse += textPart.text
                         }
                     }
-                    
-                    latch.await(120, java.util.concurrent.TimeUnit.SECONDS)
-                    exception?.let { throw it }
-                    result!!
+                    if (response.toolCalls.isNotEmpty()) {
+                        roundHasToolCalls = true
+                    }
                 }
-                lastResponse = response
-                
-                if (response.toolCalls.isNotEmpty()) {
-                    Log.d("OnDeviceLlmEngine", "Tool calls detected: ${response.toolCalls.size}")
+
+                if (roundHasToolCalls) {
+                    Log.d("OnDeviceLlmEngine", "Tool calls detected: ${lastResponse?.toolCalls?.size}")
                     val toolResults = mutableListOf<String>()
                     val tools = if (currentUseTools) OnDeviceToolExecutor(context).getAllTools() else emptyList()
-                    
-                    for (toolCall in response.toolCalls) {
+
+                    for (toolCall in lastResponse?.toolCalls ?: emptyList()) {
                         Log.d("OnDeviceLlmEngine", "Executing tool: ${toolCall.name}")
                         try {
                             val argsJson = convertJsValueToJson(toolCall.arguments)
                             val rawResult = tools.find {
                                 it.getToolDescriptionJsonString().contains("\"name\": \"${toolCall.name}\"")
                             }?.execute(argsJson) ?: "Error: Tool not found"
-                            
                             val plainText = extractResultFromJson(rawResult)
-                            
                             toolResults.add(plainText)
                             Log.d("OnDeviceLlmEngine", "Tool ${toolCall.name} result: ${plainText.take(50)}")
                         } catch (e: Exception) {
@@ -213,19 +226,14 @@ class OnDeviceLlmEngine(
                             toolResults.add("Error: ${e.message}")
                         }
                     }
-                    
+
                     currentText = toolResults.joinToString("\n\n")
                     round++
                 } else {
-                    val textParts = mutableListOf<String>()
-                    response.contents.contents.filterIsInstance<Content.Text>().forEach {
-                        textParts.add(it.text)
-                    }
-                    finalResponse = textParts.joinToString("")
                     Log.d("OnDeviceLlmEngine", "Final response: ${finalResponse.take(100)}")
                     round++
                 }
-            } while (response.toolCalls.isNotEmpty() && round < maxRounds)
+            } while (lastResponse?.toolCalls?.isNotEmpty() == true && round < maxRounds)
 
             if (finalResponse.isNotBlank()) {
                 emit(ChatEvent.Chunk(finalResponse))
@@ -235,7 +243,7 @@ class OnDeviceLlmEngine(
             Log.e("OnDeviceLlmEngine", "Chat failed", e)
             emit(ChatEvent.Error(e.message ?: "Unknown error"))
         }
-    }
+    }.flowOn(Dispatchers.Default)
 
     fun shutdown() {
         Log.d("OnDeviceLlmEngine", "Shutting down")

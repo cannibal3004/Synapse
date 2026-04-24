@@ -352,6 +352,8 @@ class ChatViewModel @Inject constructor(
             .filter { it.role != MessageRole.SYSTEM }
             .toMutableList()
 
+        onDeviceLlmRepository.resetConversation()
+
         var fullResponse = ""
         var chatError: String? = null
 
@@ -636,7 +638,7 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        onDeviceLlmRepository.shutdown()
+        viewModelScope.launch { onDeviceLlmRepository.shutdown() }
         Log.d("ChatViewModel", "ViewModel cleared, on-device engine shutdown")
     }
 }

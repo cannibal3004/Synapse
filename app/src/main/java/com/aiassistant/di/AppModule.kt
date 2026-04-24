@@ -156,4 +156,9 @@ object AppModule {
     @Singleton
     fun provideNotificationHelper(@ApplicationContext context: Context) =
         NotificationHelper(context)
+
+    @Provides
+    @Singleton
+    fun provideLlmClient(@ApplicationContext context: Context) =
+        com.aiassistant.client.LlmClient(context)
 }

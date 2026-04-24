@@ -41,5 +41,7 @@ interface OnDeviceLlmRepository {
 
     fun deleteModel(modelName: String = OnDeviceLlmEngine.DEFAULT_MODEL_NAME): Boolean
 
-    fun shutdown()
+    suspend fun shutdown()
+
+    fun resetConversation()
 }

@@ -2,16 +2,16 @@ package com.aiassistant.data.repository
 
 import android.content.Context
 import android.util.Log
+import com.aiassistant.client.LlmClient
 import com.aiassistant.data.notification.NotificationHelper
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.model.ChatMessage
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
-import com.aiassistant.domain.tool.OnDeviceToolExecutor
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -24,17 +24,16 @@ import javax.inject.Singleton
 @Singleton
 class OnDeviceLlmRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val notificationHelper: NotificationHelper
+    private val notificationHelper: NotificationHelper,
+    private val llmClient: LlmClient
 ) : OnDeviceLlmRepository {
 
     private val _state = MutableStateFlow(OnDeviceLlmEngine.EngineState())
     override val state: StateFlow<OnDeviceLlmEngine.EngineState> = _state.asStateFlow()
 
-    private val engine = OnDeviceLlmEngine(context)
     private val modelDir: File by lazy {
         File(context.filesDir, OnDeviceLlmEngine.MODEL_DIR).apply { mkdirs() }
     }
-    private val toolExecutor = OnDeviceToolExecutor(context)
 
     override suspend fun needsReinitialize(
         modelPath: String,
@@ -43,7 +42,7 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
         topK: Int?,
         topP: Float?,
         useTools: Boolean
-    ): Boolean = engine.needsReinitialize(
+    ): Boolean = llmClient.needsReinitialize(
         modelPath = modelPath,
         systemPrompt = systemPrompt,
         temperature = temperature,
@@ -59,7 +58,7 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
         topK: Int?,
         topP: Float?,
         useTools: Boolean
-    ): Result<Unit> = engine.initializeModel(
+    ): Result<Unit> = llmClient.initializeModel(
         modelPath = modelPath,
         systemPrompt = systemPrompt,
         temperature = temperature,
@@ -84,7 +83,8 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
         Log.e("OnDeviceLlmRepository", "Model initialization failed", it)
     }
 
-    override fun chatStream(messages: List<ChatMessage>) = engine.chatStream(messages)
+    override fun chatStream(messages: List<ChatMessage>): Flow<OnDeviceLlmEngine.ChatEvent> =
+        llmClient.chatStream(messages)
 
     override suspend fun downloadModel(
         huggingfaceRepo: String,
@@ -194,9 +194,13 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
         }
     }
 
-    override fun shutdown() {
-        engine.shutdown()
+    override suspend fun shutdown() {
+        llmClient.shutdown()
         _state.value = OnDeviceLlmEngine.EngineState()
+    }
+
+    override fun resetConversation() {
+        llmClient.resetConversation()
     }
 
     private fun getModelFile(modelName: String): File {
