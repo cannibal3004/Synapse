@@ -75,6 +75,7 @@ class OnDeviceLlmEngine(
             useTools != currentUseTools
     }
 
+    @OptIn(ExperimentalApi::class)
     suspend fun initializeModel(
         modelPath: String,
         systemPrompt: String?,
@@ -92,10 +93,11 @@ class OnDeviceLlmEngine(
             }
 
             Log.d("OnDeviceLlmEngine", "Loading model from: $modelPath, useTools=$useTools")
+            ExperimentalFlags.enableSpeculativeDecoding = true
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
-                backend = Backend.CPU(),
-                maxNumTokens = 32768,
+                backend = Backend.GPU(),
+                maxNumTokens = 16384,
                 cacheDir = context.cacheDir.path,
             )
 
