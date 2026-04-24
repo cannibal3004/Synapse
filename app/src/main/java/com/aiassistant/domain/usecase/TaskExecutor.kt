@@ -311,7 +311,8 @@ class TaskExecutor @Inject constructor(
                 var fullResponse = ""
                 var chatError: String? = null
 
-               onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
+                onDeviceLlmRepository.resetConversation()
+                onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
                     when (event) {
                         is com.aiassistant.domain.llm.OnDeviceLlmEngine.ChatEvent.Chunk -> {
                             fullResponse += event.text
