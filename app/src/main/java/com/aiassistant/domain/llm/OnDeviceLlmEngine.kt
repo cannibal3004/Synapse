@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 private const val TAG = "OnDeviceLlmEngine"
@@ -308,9 +309,22 @@ class OnDeviceLlmEngine(
             while (round < MAX_TOOL_ROUNDS) {
                 val roundText = StringBuilder()
                 val responses = try {
-                    when (val input = nextInput) {
-                        is Message -> conv.sendMessageAsync(input).toList()
-                        else -> conv.sendMessageAsync(input as String).toList()
+                    // A single round is capped on the wall clock as well as on tokens. The
+                    // between-round budget cannot catch a round that never ends, and a bundle
+                    // whose sampler has gone degenerate will happily emit its whole output
+                    // allowance as invalid tokens. Nothing is emitted inside this block, so
+                    // wrapping it does not break the flow's emission context.
+                    withTimeoutOrNull(ROUND_TIMEOUT_MS) {
+                        when (val input = nextInput) {
+                            is Message -> conv.sendMessageAsync(input).toList()
+                            else -> conv.sendMessageAsync(input as String).toList()
+                        }
+                    } ?: run {
+                        runCatching { conv.cancelProcess() }
+                        Log.w(TAG, "Round $round exceeded ${ROUND_TIMEOUT_MS}ms; cancelled")
+                        responseText.append("\n\n_Stopped: the model stopped making progress._")
+                        emit(ChatEvent.Done(responseText.toString(), readStats(conv)))
+                        return@flow
                     }
                 } catch (e: Exception) {
                     val remaining = capacityShortfall(e) ?: throw e
@@ -903,6 +917,10 @@ class OnDeviceLlmEngine(
         private const val DEFAULT_CONTEXT_TOKENS = 16384
         private const val MAX_TOOL_ROUNDS = 25
         private const val TOOL_LOOP_BUDGET_MS = 3 * 60 * 1000L
+
+        /** Hard ceiling on one generation, so a degenerate sampler cannot run for its whole
+         * output allowance. Generous: a slow CPU round on a 2.5B model measured ~90s. */
+        private const val ROUND_TIMEOUT_MS = 4 * 60 * 1000L
         private const val MAX_TOOL_RESULT_CHARS = 1500
 
         /** Below this a truncated tool result carries too little to be worth the context. */
