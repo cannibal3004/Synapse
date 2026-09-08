@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import com.aiassistant.domain.usecase.MemorySearchUseCase
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.gson.Gson
 import okhttp3.MediaType.Companion.toMediaType
@@ -24,7 +25,6 @@ import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.NativeObject
 import org.mozilla.javascript.NativeArray
 import org.mozilla.javascript.Undefined
-import org.mozilla.javascript.tools.shell.Global
 
 private const val EXA_API_URL = "https://api.exa.ai/search"
 
@@ -298,7 +298,7 @@ class WebSearchToolImpl(
 
             val response = httpClient.newCall(request).execute()
 
-            val responseBody = response.body?.string() ?: "{}"
+            val responseBody = response.body.string()
 
             if (!response.isSuccessful) {
                 return gson.toJson(mapOf("result" to "Error: Exa API returned ${response.code}: $responseBody"))
@@ -400,7 +400,7 @@ class WeatherToolImpl : OpenApiTool {
             val geoUrl = "https://geocoding-api.open-meteo.com/v1/search?name=${java.net.URLEncoder.encode(city, "UTF-8")}&count=1"
             val geoRequest = Request.Builder().url(geoUrl).build()
             val geoResponse = httpClient.newCall(geoRequest).execute()
-            val geoBody = geoResponse.body?.string() ?: "{}"
+            val geoBody = geoResponse.body.string()
             val geoJson = com.google.gson.JsonParser.parseString(geoBody)
 
             val results = geoJson.asJsonObject?.get("results")?.asJsonArray
@@ -419,7 +419,7 @@ class WeatherToolImpl : OpenApiTool {
             val weatherUrl = "https://api.open-meteo.com/v1/forecast?latitude=$lat&longitude=$lon&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl&daily=temperature_2m_max,temperature_2m_min&temperature_unit=$units&timezone=auto"
             val weatherRequest = Request.Builder().url(weatherUrl).build()
             val weatherResponse = httpClient.newCall(weatherRequest).execute()
-            val weatherBody = weatherResponse.body?.string() ?: "{}"
+            val weatherBody = weatherResponse.body.string()
             val weatherJson = com.google.gson.JsonParser.parseString(weatherBody)
 
             val current = weatherJson.asJsonObject?.get("current")?.asJsonObject
@@ -623,9 +623,8 @@ class CodeInterpreterToolImpl : OpenApiTool {
     private fun executeJavaScript(code: String): String {
         val cx = RhinoContext.enter()
         return try {
-            cx.setOptimizationLevel(-1)
-            val global = Global(cx)
-            val scope: Scriptable = cx.newObject(global)
+            cx.setInterpretedMode(true)
+            val scope: Scriptable = cx.initStandardObjects()
 
             val result = cx.evaluateString(
                 scope,
@@ -1311,8 +1310,19 @@ class TermuxShellToolImpl(
     }
 }
 
+/**
+ * Tool set for the on-device engine.
+ *
+ * Constructing this registers a broadcast receiver for the Termux tool, so hold one instance for
+ * the lifetime of the engine rather than building it per conversation or per tool round.
+ *
+ * [memory] is optional: the memory tools are only offered when a memory store is available in this
+ * process. [conversationIdProvider] supplies provenance for stored facts.
+ */
 class OnDeviceToolExecutor(
-    private val context: Context
+    private val context: Context,
+    memory: MemorySearchUseCase? = null,
+    conversationIdProvider: () -> String = { "" }
 ) {
     private val calculatorTool = CalculatorToolImpl()
     private val webSearchTool = WebSearchToolImpl(context)
@@ -1321,6 +1331,12 @@ class OnDeviceToolExecutor(
     private val codeInterpreterTool = CodeInterpreterToolImpl()
     private val deviceInfoTool = DeviceInfoToolImpl(context)
     private val termuxShellTool = TermuxShellToolImpl(context)
+    private val memoryTools: List<OpenApiTool> = memory?.let {
+        listOf(
+            RememberFactTool(it, conversationIdProvider),
+            RecallFactsTool(it)
+        )
+    } ?: emptyList()
 
     fun getAllTools(): List<OpenApiTool> = listOf(
         calculatorTool,
@@ -1330,5 +1346,5 @@ class OnDeviceToolExecutor(
         codeInterpreterTool,
         deviceInfoTool,
         termuxShellTool
-    )
+    ) + memoryTools
 }

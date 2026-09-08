@@ -1,5 +1,6 @@
 package com.aiassistant.client
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
@@ -10,86 +11,131 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.util.Log
+import com.aiassistant.domain.llm.GenerationStats
+import com.aiassistant.domain.llm.LlmBackend
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.model.ChatMessage
 import com.aiassistant.domain.model.ChatMessageDto
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
+import com.aiassistant.service.LlmIpc.CB_CHUNK
+import com.aiassistant.service.LlmIpc.CB_DONE
+import com.aiassistant.service.LlmIpc.CB_ERROR
+import com.aiassistant.service.LlmIpc.CB_INIT_DONE
+import com.aiassistant.service.LlmIpc.CB_NEEDS_REINIT
+import com.aiassistant.service.LlmIpc.CB_STATE
+import com.aiassistant.service.LlmIpc.CB_THINKING
+import com.aiassistant.service.LlmIpc.EXTRA_BACKEND
+import com.aiassistant.service.LlmIpc.EXTRA_CONTEXT_TOKENS
+import com.aiassistant.service.LlmIpc.EXTRA_ENABLE_THINKING
+import com.aiassistant.service.LlmIpc.EXTRA_MAX_OUTPUT_TOKENS
+import com.aiassistant.service.LlmIpc.EXTRA_MESSAGES_JSON
+import com.aiassistant.service.LlmIpc.EXTRA_MODEL_PATH
+import com.aiassistant.service.LlmIpc.EXTRA_SYSTEM_PROMPT
+import com.aiassistant.service.LlmIpc.EXTRA_TEMPERATURE
+import com.aiassistant.service.LlmIpc.EXTRA_THINKING_BUDGET
+import com.aiassistant.service.LlmIpc.EXTRA_TOP_K
+import com.aiassistant.service.LlmIpc.EXTRA_TOP_P
+import com.aiassistant.service.LlmIpc.EXTRA_USE_TOOLS
+import com.aiassistant.service.LlmIpc.KEY_ERROR
+import com.aiassistant.service.LlmIpc.KEY_RESPONSE
+import com.aiassistant.service.LlmIpc.KEY_STATE
+import com.aiassistant.service.LlmIpc.KEY_STATS
+import com.aiassistant.service.LlmIpc.KEY_TEXT
+import com.aiassistant.service.LlmIpc.MSG_CANCEL
+import com.aiassistant.service.LlmIpc.MSG_CHAT
+import com.aiassistant.service.LlmIpc.MSG_GET_STATE
+import com.aiassistant.service.LlmIpc.MSG_INITIALIZE
+import com.aiassistant.service.LlmIpc.MSG_NEEDS_REINIT
+import com.aiassistant.service.LlmIpc.MSG_PING
+import com.aiassistant.service.LlmIpc.MSG_RESET_CONVERSATION
+import com.aiassistant.service.LlmIpc.MSG_SHUTDOWN
 import com.aiassistant.service.LlmService
+import com.google.gson.Gson
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.withContext
-import java.util.concurrent.CountDownLatch
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
 
 private const val TAG = "LlmClient"
-
-private const val MSG_INITIALIZE = 1
-private const val MSG_CHAT = 2
-private const val MSG_SHUTDOWN = 3
-private const val MSG_GET_STATE = 4
-private const val MSG_NEEDS_REINIT = 5
-private const val MSG_PING = 6
-private const val MSG_RESET_CONVERSATION = 7
-
-private const val CB_INIT_DONE = 100
-private const val CB_CHUNK = 101
-private const val CB_DONE = 102
-private const val CB_ERROR = 103
-private const val CB_STATE = 104
-private const val CB_NEEDS_REINIT = 105
-
-private const val EXTRA_SYSTEM_PROMPT = "systemPrompt"
-private const val EXTRA_TEMPERATURE = "temperature"
-private const val EXTRA_TOP_K = "topK"
-private const val EXTRA_TOP_P = "topP"
-private const val EXTRA_USE_TOOLS = "useTools"
-private const val EXTRA_MODEL_PATH = "modelPath"
-private const val EXTRA_MESSAGES = "messages"
-private const val EXTRA_MESSAGES_JSON = "messagesJson"
-
-private val gson = Gson()
-private const val EXTRA_CALLBACK = "callback"
+private const val BIND_TIMEOUT_MS = 5_000L
+private const val INIT_TIMEOUT_MS = 120_000L
+private const val QUERY_TIMEOUT_MS = 10_000L
+private const val SERVICE_DIED_MESSAGE =
+    "The on-device model stopped unexpectedly - the system most likely reclaimed its memory. " +
+        "Try a smaller model, or close other apps and retry."
 
 @Singleton
 class LlmClient @Inject constructor(
     private val context: Context
 ) : AutoCloseable {
 
+    private val gson = Gson()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val lock = Any()
     private var serviceMessenger: Messenger? = null
+    private var pendingConnection: CompletableDeferred<Messenger>? = null
     private var isBound = false
 
+    /**
+     * Callbacks to run if the service process dies.
+     *
+     * The engine holds a multi-GB model in a separate process, which makes it a prime target for
+     * the low-memory killer mid-inference. Without this the reply flow simply never completes and
+     * the UI spins forever.
+     */
+    private val deathHandlers = mutableSetOf<() -> Unit>()
+
     private val connection = object : ServiceConnection {
-        override fun onServiceConnected(name: android.content.ComponentName, binder: IBinder) {
-            serviceMessenger = Messenger(binder)
-            isBound = true
+        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            val messenger = Messenger(binder)
+            val waiting = synchronized(lock) {
+                serviceMessenger = messenger
+                isBound = true
+                pendingConnection.also { pendingConnection = null }
+            }
+            waiting?.complete(messenger)
             Log.d(TAG, "Bound to LlmService")
         }
 
-        override fun onServiceDisconnected(name: android.content.ComponentName) {
-            serviceMessenger = null
-            isBound = false
-            Log.d(TAG, "Disconnected from LlmService")
+        override fun onServiceDisconnected(name: ComponentName) {
+            val handlers = synchronized(lock) {
+                serviceMessenger = null
+                pendingConnection = null
+                deathHandlers.toList().also { deathHandlers.clear() }
+            }
+            Log.w(TAG, "LlmService process died; failing ${handlers.size} in-flight request(s)")
+            handlers.forEach { runCatching { it() } }
         }
     }
 
     fun bind() {
-        if (isBound) return
-        val intent = Intent(context, LlmService::class.java)
-        context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
-        context.startService(intent)
-         Log.d(TAG, "Binding to LlmService")
+        synchronized(lock) {
+            if (serviceMessenger != null) return
+            startBindingLocked()
+        }
     }
 
     override fun close() {
-        if (isBound) {
+        synchronized(lock) {
+            if (!isBound) return
             context.unbindService(connection)
             isBound = false
-            Log.d(TAG, "Unbound from LlmService")
+            serviceMessenger = null
+            pendingConnection = null
         }
+        scope.cancel()
+        Log.d(TAG, "Unbound from LlmService")
     }
 
     suspend fun initializeModel(
@@ -98,46 +144,24 @@ class LlmClient @Inject constructor(
         temperature: Float? = null,
         topK: Int? = null,
         topP: Float? = null,
-        useTools: Boolean = true
-    ): Result<Unit> = withContext(Dispatchers.IO) {
-        ensureBound()
-        val latch = CountDownLatch(1)
-        var result: Result<Unit> = Result.failure(Exception("Timeout"))
-
-        val handler = Handler(Looper.getMainLooper()) { msg ->
+        useTools: Boolean = true,
+        enableThinking: Boolean = false,
+        thinkingTokenBudget: Int? = null,
+        maxOutputTokens: Int? = null,
+        backend: LlmBackend = LlmBackend.CPU,
+        contextTokens: Int? = null
+    ): Result<Unit> {
+        val data = engineParamsBundle(
+            modelPath, systemPrompt, temperature, topK, topP,
+            useTools, enableThinking, thinkingTokenBudget, maxOutputTokens, backend, contextTokens
+        )
+        return sendAndAwait(MSG_INITIALIZE, data, INIT_TIMEOUT_MS) { msg ->
             when (msg.what) {
-                CB_INIT_DONE -> { result = Result.success(Unit); latch.countDown() }
-                CB_ERROR -> {
-                    val b = msg.obj as? Bundle
-                    result = Result.failure(Exception(b?.getString("error") ?: "Unknown error"))
-                    latch.countDown()
-                }
+                CB_INIT_DONE -> Result.success(Unit)
+                CB_ERROR -> Result.failure(Exception(msg.errorText()))
+                else -> null
             }
-            true
-        }
-
-        val sm = serviceMessenger
-        if (sm != null) {
-            val msg = Message.obtain(null, MSG_INITIALIZE).apply {
-                replyTo = Messenger(handler)
-                data = Bundle().apply {
-                    putString(EXTRA_MODEL_PATH, modelPath)
-                    systemPrompt?.let { putString(EXTRA_SYSTEM_PROMPT, it) }
-                    temperature?.let { putFloat(EXTRA_TEMPERATURE, it) }
-                    topK?.let { putInt(EXTRA_TOP_K, it) }
-                    topP?.let { putFloat(EXTRA_TOP_P, it) }
-                    putBoolean(EXTRA_USE_TOOLS, useTools)
-                }
-            }
-            sm.send(msg)
-            Log.d(TAG, "initializeModel: sent")
-        }
-
-        if (!latch.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
-            Log.w(TAG, "initializeModel: latch timed out")
-        }
-        handler.removeCallbacksAndMessages(null)
-        result
+        } ?: Result.failure(IllegalStateException("Model initialization timed out"))
     }
 
     suspend fun needsReinitialize(
@@ -146,94 +170,92 @@ class LlmClient @Inject constructor(
         temperature: Float? = null,
         topK: Int? = null,
         topP: Float? = null,
-        useTools: Boolean = true
-    ): Boolean = withContext(Dispatchers.IO) {
-        ensureBound()
-        val latch = CountDownLatch(1)
-        var result = true
-
-        val handler = Handler(Looper.getMainLooper()) { msg ->
+        useTools: Boolean = true,
+        enableThinking: Boolean = false,
+        thinkingTokenBudget: Int? = null,
+        maxOutputTokens: Int? = null,
+        backend: LlmBackend = LlmBackend.CPU,
+        contextTokens: Int? = null
+    ): Boolean {
+        val data = engineParamsBundle(
+            modelPath, systemPrompt, temperature, topK, topP,
+            useTools, enableThinking, thinkingTokenBudget, maxOutputTokens, backend, contextTokens
+        )
+        // Defaulting to true means a dropped reply causes a redundant re-init rather than
+        // inference against a stale conversation.
+        return sendAndAwait(MSG_NEEDS_REINIT, data, QUERY_TIMEOUT_MS) { msg ->
             when (msg.what) {
-                CB_NEEDS_REINIT -> { result = msg.arg1 == 1; latch.countDown() }
-                CB_ERROR -> { latch.countDown() }
+                CB_NEEDS_REINIT -> msg.arg1 == 1
+                CB_ERROR -> true
+                else -> null
             }
-            true
-        }
+        } ?: true
+    }
 
-        val sm = serviceMessenger
-        if (sm != null) {
-            val msg = Message.obtain(null, MSG_NEEDS_REINIT).apply {
-                replyTo = Messenger(handler)
-                data = Bundle().apply {
-                    putString(EXTRA_MODEL_PATH, modelPath)
-                    systemPrompt?.let { putString(EXTRA_SYSTEM_PROMPT, it) }
-                    temperature?.let { putFloat(EXTRA_TEMPERATURE, it) }
-                    topK?.let { putInt(EXTRA_TOP_K, it) }
-                    topP?.let { putFloat(EXTRA_TOP_P, it) }
-                    putBoolean(EXTRA_USE_TOOLS, useTools)
-                }
+    suspend fun getState(): OnDeviceLlmEngine.EngineState {
+        return sendAndAwait(MSG_GET_STATE, Bundle(), QUERY_TIMEOUT_MS) { msg ->
+            if (msg.what != CB_STATE) {
+                null
+            } else {
+                runCatching {
+                    gson.fromJson(
+                        msg.text(KEY_STATE),
+                        OnDeviceLlmEngine.EngineState::class.java
+                    )
+                }.getOrNull()
             }
-            sm.send(msg)
-            Log.d(TAG, "needsReinitialize: sent")
-        }
-
-        if (!latch.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
-            Log.w(TAG, "needsReinitialize: latch timed out")
-        }
-        handler.removeCallbacksAndMessages(null)
-        result
+        } ?: OnDeviceLlmEngine.EngineState()
     }
 
     fun chatStream(messages: List<ChatMessage>): Flow<OnDeviceLlmEngine.ChatEvent> = callbackFlow {
-        bind()
-
-        var timeout = 5000
-        while (!isBound && timeout > 0) {
-            Thread.sleep(50)
-            timeout -= 50
-        }
-        if (!isBound) {
+        val messenger = awaitService() ?: run {
             trySend(OnDeviceLlmEngine.ChatEvent.Error("Service bind timeout"))
             close()
             return@callbackFlow
         }
         Log.d(TAG, "chatStream: service bound, sending ${messages.size} messages")
 
+        val onDeath = {
+            trySend(OnDeviceLlmEngine.ChatEvent.Error(SERVICE_DIED_MESSAGE))
+            close()
+            Unit
+        }
+        addDeathHandler(onDeath)
+
         val handler = Handler(Looper.getMainLooper()) { msg ->
             when (msg.what) {
-                CB_CHUNK -> {
-                    val b = msg.obj as? Bundle
-                    trySend(OnDeviceLlmEngine.ChatEvent.Chunk(b?.getString("text") ?: ""))
-                }
+                CB_CHUNK -> trySend(OnDeviceLlmEngine.ChatEvent.Chunk(msg.text(KEY_TEXT)))
+                CB_THINKING -> trySend(OnDeviceLlmEngine.ChatEvent.Thinking(msg.text(KEY_TEXT)))
                 CB_DONE -> {
-                    val b = msg.obj as? Bundle
-                    trySend(OnDeviceLlmEngine.ChatEvent.Done(b?.getString("response") ?: ""))
+                    val stats = msg.text(KEY_STATS)
+                        .takeIf { it.isNotEmpty() }
+                        ?.let {
+                            runCatching { gson.fromJson(it, GenerationStats::class.java) }
+                                .getOrNull()
+                        }
+                    trySend(OnDeviceLlmEngine.ChatEvent.Done(msg.text(KEY_RESPONSE), stats))
                     close()
                 }
                 CB_ERROR -> {
-                    val b = msg.obj as? Bundle
-                    trySend(OnDeviceLlmEngine.ChatEvent.Error(b?.getString("error") ?: "Unknown error"))
+                    trySend(OnDeviceLlmEngine.ChatEvent.Error(msg.errorText()))
                     close()
                 }
             }
             true
         }
 
-        val sm = serviceMessenger
-        if (sm == null) {
-            trySend(OnDeviceLlmEngine.ChatEvent.Error("Service not connected"))
-            close()
-            return@callbackFlow
-        }
-
-        val msg = Message.obtain(null, MSG_CHAT).apply {
+        val request = Message.obtain(null, MSG_CHAT).apply {
             replyTo = Messenger(handler)
             data = Bundle().apply {
-                putString(EXTRA_MESSAGES_JSON, gson.toJson(messages.map { ChatMessageDto.fromChatMessage(it) }))
+                putString(
+                    EXTRA_MESSAGES_JSON,
+                    gson.toJson(messages.map { ChatMessageDto.fromChatMessage(it) })
+                )
             }
         }
+
         try {
-            sm.send(msg)
+            messenger.send(request)
             Log.d(TAG, "chatStream: sent")
         } catch (e: Exception) {
             Log.e(TAG, "chatStream: failed to send", e)
@@ -242,87 +264,138 @@ class LlmClient @Inject constructor(
         }
 
         awaitClose {
+            removeDeathHandler(onDeath)
             handler.removeCallbacksAndMessages(null)
         }
     }
 
-    suspend fun getState(): OnDeviceLlmEngine.EngineState = withContext(Dispatchers.IO) {
-        ensureBound()
-        val latch = CountDownLatch(1)
-        var result = OnDeviceLlmEngine.EngineState()
+    suspend fun shutdown() {
+        awaitService()?.trySend(Message.obtain(null, MSG_SHUTDOWN))
+    }
 
-        val handler = Handler(Looper.getMainLooper()) { msg ->
-            if (msg.what == CB_STATE) {
-                val json = msg.obj as? String
-                if (json != null) {
-                    val map = gson.fromJson(json, object : TypeToken<Map<String, Any>>() {}.type) as? Map<String, Any>
-                    if (map != null) {
-                        result = OnDeviceLlmEngine.EngineState(
-                            isReady = map["isReady"] as? Boolean ?: false,
-                            isLoading = map["isLoading"] as? Boolean ?: false,
-                            modelPath = map["modelPath"] as? String,
-                            error = map["error"] as? String
-                        )
-                    }
-                }
-                latch.countDown()
+    fun resetConversation() = fireAndForget(MSG_RESET_CONVERSATION)
+
+    fun cancel() = fireAndForget(MSG_CANCEL)
+
+    fun ping() = fireAndForget(MSG_PING)
+
+    private fun addDeathHandler(handler: () -> Unit) {
+        synchronized(lock) { deathHandlers += handler }
+    }
+
+    private fun removeDeathHandler(handler: () -> Unit) {
+        synchronized(lock) { deathHandlers -= handler }
+    }
+
+    private fun fireAndForget(what: Int) {
+        scope.launch {
+            val messenger = awaitService()
+            if (messenger == null) {
+                Log.w(TAG, "fireAndForget: no service for msgWhat=$what")
+                return@launch
             }
-            true
+            messenger.trySend(Message.obtain(null, what))
         }
+    }
 
-        val sm = serviceMessenger
-        if (sm != null) {
-            val msg = Message.obtain(null, MSG_GET_STATE).apply {
+    private suspend fun <T> sendAndAwait(
+        what: Int,
+        data: Bundle,
+        timeoutMs: Long,
+        onReply: (Message) -> T?
+    ): T? = withTimeoutOrNull(timeoutMs) {
+        val messenger = awaitService() ?: return@withTimeoutOrNull null
+        suspendCancellableCoroutine { continuation ->
+            val handler = Handler(Looper.getMainLooper()) { msg ->
+                val value = runCatching { onReply(msg) }.getOrNull()
+                if (value != null) continuation.resumeIfActive(value)
+                true
+            }
+            val onDeath = {
+                Log.w(TAG, "Service died while awaiting reply to $what")
+                continuation.resumeIfActive(null)
+            }
+            addDeathHandler(onDeath)
+            continuation.invokeOnCancellation {
+                removeDeathHandler(onDeath)
+                handler.removeCallbacksAndMessages(null)
+            }
+
+            val request = Message.obtain(null, what).apply {
                 replyTo = Messenger(handler)
+                this.data = data
             }
-            sm.send(msg)
-            Log.d(TAG, "getState: sent")
-        }
-
-        if (!latch.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
-            Log.w(TAG, "getState: latch timed out")
-        }
-        handler.removeCallbacksAndMessages(null)
-        result
-    }
-
-    suspend fun shutdown() = withContext(Dispatchers.IO) {
-        sendRequest(MSG_SHUTDOWN, Bundle())
-    }
-
-    fun resetConversation() {
-        sendRequest(MSG_RESET_CONVERSATION, Bundle())
-    }
-
-    fun ping() {
-        sendRequest(MSG_PING, Bundle())
-    }
-
-    private fun sendRequest(msgWhat: Int, extras: Bundle) {
-        val sm = serviceMessenger
-        if (sm == null) {
-            Log.w(TAG, "sendRequest: serviceMessenger is null for msgWhat=$msgWhat")
-            return
-        }
-        Message.obtain(null, msgWhat).apply {
-            data = extras
             try {
-                sm.send(this)
-                Log.d(TAG, "sendRequest: $msgWhat")
+                messenger.send(request)
             } catch (e: Exception) {
-                Log.e(TAG, "sendRequest: failed $msgWhat", e)
+                Log.e(TAG, "sendAndAwait: failed to send $what", e)
+                continuation.resumeIfActive(null)
             }
         }
     }
 
-    private fun ensureBound() {
-        if (!isBound) {
-            bind()
-            var timeout = 5000
-            while (!isBound && timeout > 0) {
-                Thread.sleep(50)
-                timeout -= 50
-            }
+    /**
+     * Binds if needed and suspends until the service connects. Never blocks the calling thread,
+     * which matters because [chatStream] is collected from the UI-facing dispatcher.
+     */
+    private suspend fun awaitService(): Messenger? {
+        val deferred = synchronized(lock) {
+            serviceMessenger?.let { return it }
+            pendingConnection ?: startBindingLocked()
         }
+        return withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }
+    }
+
+    private fun startBindingLocked(): CompletableDeferred<Messenger> {
+        val deferred = CompletableDeferred<Messenger>()
+        pendingConnection = deferred
+        val intent = Intent(context, LlmService::class.java)
+        context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        context.startService(intent)
+        Log.d(TAG, "Binding to LlmService")
+        return deferred
+    }
+
+    private fun engineParamsBundle(
+        modelPath: String,
+        systemPrompt: String?,
+        temperature: Float?,
+        topK: Int?,
+        topP: Float?,
+        useTools: Boolean,
+        enableThinking: Boolean,
+        thinkingTokenBudget: Int?,
+        maxOutputTokens: Int?,
+        backend: LlmBackend,
+        contextTokens: Int?
+    ) = Bundle().apply {
+        putString(EXTRA_MODEL_PATH, modelPath)
+        systemPrompt?.let { putString(EXTRA_SYSTEM_PROMPT, it) }
+        temperature?.let { putFloat(EXTRA_TEMPERATURE, it) }
+        topK?.let { putInt(EXTRA_TOP_K, it) }
+        topP?.let { putFloat(EXTRA_TOP_P, it) }
+        putBoolean(EXTRA_USE_TOOLS, useTools)
+        putBoolean(EXTRA_ENABLE_THINKING, enableThinking)
+        thinkingTokenBudget?.let { putInt(EXTRA_THINKING_BUDGET, it) }
+        maxOutputTokens?.let { putInt(EXTRA_MAX_OUTPUT_TOKENS, it) }
+        putString(EXTRA_BACKEND, backend.name)
+        contextTokens?.let { putInt(EXTRA_CONTEXT_TOKENS, it) }
+    }
+
+    private fun Message.text(key: String): String = (obj as? Bundle)?.getString(key) ?: ""
+
+    private fun Message.errorText(): String =
+        (obj as? Bundle)?.getString(KEY_ERROR) ?: "Unknown error"
+
+    private fun Messenger.trySend(message: Message) {
+        try {
+            send(message)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to send message ${message.what}", e)
+        }
+    }
+
+    private fun <T> CancellableContinuation<T?>.resumeIfActive(value: T?) {
+        if (isActive) resume(value)
     }
 }

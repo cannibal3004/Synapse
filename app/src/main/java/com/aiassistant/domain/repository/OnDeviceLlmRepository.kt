@@ -1,5 +1,6 @@
 package com.aiassistant.domain.repository
 
+import com.aiassistant.domain.llm.LlmBackend
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.model.ChatMessage
 import kotlinx.coroutines.flow.Flow
@@ -15,7 +16,12 @@ interface OnDeviceLlmRepository {
         temperature: Float?,
         topK: Int?,
         topP: Float?,
-        useTools: Boolean
+        useTools: Boolean,
+        enableThinking: Boolean = false,
+        thinkingTokenBudget: Int? = null,
+        maxOutputTokens: Int? = null,
+        backend: LlmBackend = LlmBackend.CPU,
+        contextTokens: Int? = null
     ): Boolean
 
     suspend fun initializeModel(
@@ -24,7 +30,12 @@ interface OnDeviceLlmRepository {
         temperature: Float? = null,
         topK: Int? = null,
         topP: Float? = null,
-        useTools: Boolean = true
+        useTools: Boolean = true,
+        enableThinking: Boolean = false,
+        thinkingTokenBudget: Int? = null,
+        maxOutputTokens: Int? = null,
+        backend: LlmBackend = LlmBackend.CPU,
+        contextTokens: Int? = null
     ): Result<Unit>
 
     fun chatStream(messages: List<ChatMessage>): Flow<OnDeviceLlmEngine.ChatEvent>
@@ -44,4 +55,6 @@ interface OnDeviceLlmRepository {
     suspend fun shutdown()
 
     fun resetConversation()
+
+    fun cancel()
 }

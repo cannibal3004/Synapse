@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.aiassistant.client.LlmClient
 import com.aiassistant.data.notification.NotificationHelper
+import com.aiassistant.domain.llm.LlmBackend
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.model.ChatMessage
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
@@ -41,14 +42,24 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
         temperature: Float?,
         topK: Int?,
         topP: Float?,
-        useTools: Boolean
+        useTools: Boolean,
+        enableThinking: Boolean,
+        thinkingTokenBudget: Int?,
+        maxOutputTokens: Int?,
+        backend: LlmBackend,
+        contextTokens: Int?
     ): Boolean = llmClient.needsReinitialize(
         modelPath = modelPath,
         systemPrompt = systemPrompt,
         temperature = temperature,
         topK = topK,
         topP = topP,
-        useTools = useTools
+        useTools = useTools,
+        enableThinking = enableThinking,
+        thinkingTokenBudget = thinkingTokenBudget,
+        maxOutputTokens = maxOutputTokens,
+        backend = backend,
+        contextTokens = contextTokens
     )
 
     override suspend fun initializeModel(
@@ -57,16 +68,26 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
         temperature: Float?,
         topK: Int?,
         topP: Float?,
-        useTools: Boolean
+        useTools: Boolean,
+        enableThinking: Boolean,
+        thinkingTokenBudget: Int?,
+        maxOutputTokens: Int?,
+        backend: LlmBackend,
+        contextTokens: Int?
     ): Result<Unit> = llmClient.initializeModel(
         modelPath = modelPath,
         systemPrompt = systemPrompt,
         temperature = temperature,
         topK = topK,
         topP = topP,
-        useTools = useTools
+        useTools = useTools,
+        enableThinking = enableThinking,
+        thinkingTokenBudget = thinkingTokenBudget,
+        maxOutputTokens = maxOutputTokens,
+        backend = backend,
+        contextTokens = contextTokens
     ).onSuccess {
-        _state.value = OnDeviceLlmEngine.EngineState(
+        _state.value = llmClient.getState().copy(
             isReady = true,
             isLoading = false,
             modelPath = modelPath,
@@ -201,6 +222,10 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
 
     override fun resetConversation() {
         llmClient.resetConversation()
+    }
+
+    override fun cancel() {
+        llmClient.cancel()
     }
 
     private fun getModelFile(modelName: String): File {

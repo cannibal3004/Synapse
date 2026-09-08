@@ -35,10 +35,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
+import coil3.compose.AsyncImage
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.aiassistant.domain.model.Attachment
 import com.aiassistant.domain.model.AttachmentType
 import com.aiassistant.domain.model.ChatMessage
@@ -419,6 +419,23 @@ fun ChatScreen(
                     }
                 }
 
+                uiState.onDeviceStats?.takeIf { it.isNotBlank() }?.let { stats ->
+                    item(key = "stats") {
+                        Text(
+                            text = stats,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                        )
+                    }
+                }
+
+                uiState.onDeviceThinking?.takeIf { it.isNotBlank() }?.let { thinking ->
+                    item(key = "thinking") {
+                        ThinkingBubble(text = thinking)
+                    }
+                }
+
                 if (uiState.isLoading) {
                     item {
                         LoadingIndicator()
@@ -778,6 +795,58 @@ private fun getToolIcon(name: String) = when (name) {
     "code_interpreter" -> Icons.Default.Code
     "device_info" -> Icons.Default.Info
     else -> Icons.Default.Build
+}
+
+/**
+ * Reasoning routed out of the answer via the model's thought channel. Collapsed by default: it is
+ * context, not the reply, and reasoning models emit a lot of it.
+ */
+@Composable
+private fun ThinkingBubble(text: String) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Psychology,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Thinking",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = if (expanded) "Hide" else "Show",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            if (expanded) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
 }
 
 @Composable

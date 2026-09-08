@@ -18,7 +18,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import com.aiassistant.domain.llm.LlmBackend
+import com.aiassistant.domain.llm.OnDeviceEmbeddingEngine
 import com.aiassistant.domain.llm.OnDeviceLlmSettings
 import com.aiassistant.presentation.vm.SettingsViewModel
 
@@ -42,6 +44,28 @@ fun SettingsScreen(
     var onDeviceModelName by remember { mutableStateOf(settings.onDeviceSettings?.modelName ?: "gemma-4-E2B-it.litertlm") }
     var onDeviceHuggingfaceRepo by remember { mutableStateOf(settings.onDeviceSettings?.huggingfaceRepo ?: "litert-community/gemma-4-E2B-it-litert-lm") }
     var onDeviceSystemPrompt by remember { mutableStateOf(settings.onDeviceSettings?.systemPrompt ?: "") }
+    var onDeviceThinking by remember { mutableStateOf(settings.onDeviceSettings?.enableThinking ?: false) }
+    var onDeviceBackend by remember {
+        mutableStateOf(settings.onDeviceSettings?.backend ?: LlmBackend.CPU)
+    }
+    var onDeviceContextTokens by remember {
+        mutableStateOf(settings.onDeviceSettings?.contextTokens?.toString() ?: "")
+    }
+    var onDeviceEmbeddings by remember {
+        mutableStateOf(settings.onDeviceSettings?.onDeviceEmbeddingsEnabled ?: false)
+    }
+    var onDeviceEmbeddingModel by remember {
+        mutableStateOf(
+            settings.onDeviceSettings?.embeddingModelName
+                ?: OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_MODEL_NAME
+        )
+    }
+    var onDeviceEmbeddingRepo by remember {
+        mutableStateOf(
+            settings.onDeviceSettings?.embeddingHuggingfaceRepo
+                ?: OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_REPO
+        )
+    }
 
     LaunchedEffect(settings) {
         apiKey = settings.apiKey ?: ""
@@ -55,6 +79,12 @@ fun SettingsScreen(
             onDeviceModelName = ods.modelName
             onDeviceHuggingfaceRepo = ods.huggingfaceRepo
             onDeviceSystemPrompt = ods.systemPrompt ?: ""
+            onDeviceThinking = ods.enableThinking
+            onDeviceBackend = ods.backend
+            onDeviceContextTokens = ods.contextTokens?.toString() ?: ""
+            onDeviceEmbeddings = ods.onDeviceEmbeddingsEnabled
+            onDeviceEmbeddingModel = ods.embeddingModelName
+            onDeviceEmbeddingRepo = ods.embeddingHuggingfaceRepo
         }
     }
 
@@ -235,6 +265,128 @@ fun SettingsScreen(
                 maxLines = 3
             )
 
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Compute Backend",
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = "A backend only works if the model bundle was built for it \u2014 e.g. gemma " +
+                    "publishes a separate -gpu file. Falls back with an error if unsupported.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                LlmBackend.entries.forEach { backend ->
+                    FilterChip(
+                        selected = onDeviceBackend == backend,
+                        onClick = { onDeviceBackend = backend },
+                        label = {
+                            Text(
+                                when (backend) {
+                                    LlmBackend.CPU -> "CPU"
+                                    LlmBackend.GPU -> "GPU"
+                                    LlmBackend.NPU -> "NPU"
+                                    LlmBackend.GOOGLE_TENSOR -> "Tensor"
+                                }
+                            )
+                        },
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = onDeviceContextTokens,
+                onValueChange = { onDeviceContextTokens = it.filter(Char::isDigit) },
+                label = { Text("Context Tokens (KV budget)") },
+                placeholder = { Text("16384") },
+                supportingText = {
+                    Text("Larger means more RAM. Lower it if the model keeps being killed.")
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Enable Thinking",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = onDeviceThinking,
+                    onCheckedChange = { onDeviceThinking = it }
+                )
+            }
+
+            Text(
+                text = "Lets reasoning models think before answering. Ignored automatically when the loaded model does not support it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "On-Device Embeddings",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = onDeviceEmbeddings,
+                    onCheckedChange = { onDeviceEmbeddings = it }
+                )
+            }
+
+            Text(
+                text = "Runs memory search locally with a separate embedding model (~300MB), downloaded on first use.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp)
+            )
+
+            if (onDeviceEmbeddings) {
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = onDeviceEmbeddingModel,
+                    onValueChange = { onDeviceEmbeddingModel = it },
+                    label = { Text("Embedding Model Name") },
+                    placeholder = { Text(OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_MODEL_NAME) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = onDeviceEmbeddingRepo,
+                    onValueChange = { onDeviceEmbeddingRepo = it },
+                    label = { Text("Embedding HuggingFace Repo") },
+                    placeholder = { Text(OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_REPO) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+
             Spacer(modifier = Modifier.height(32.dp))
 
             val termuxStatus by viewModel.termuxStatus.collectAsState()
@@ -316,12 +468,20 @@ fun SettingsScreen(
                         exaApiKey = if (exaApiKey.isEmpty()) null else exaApiKey
                     )
 
+                    // copy() rather than a fresh instance: sampler settings are not edited on
+                    // this screen and must survive a save.
                     viewModel.saveOnDeviceSettings(
-                        OnDeviceLlmSettings(
+                        (settings.onDeviceSettings ?: OnDeviceLlmSettings()).copy(
                             enabled = onDeviceEnabled,
                             modelName = onDeviceModelName,
                             huggingfaceRepo = onDeviceHuggingfaceRepo,
-                            systemPrompt = if (onDeviceSystemPrompt.isEmpty()) null else onDeviceSystemPrompt
+                            systemPrompt = if (onDeviceSystemPrompt.isEmpty()) null else onDeviceSystemPrompt,
+                            enableThinking = onDeviceThinking,
+                            backend = onDeviceBackend,
+                            contextTokens = onDeviceContextTokens.toIntOrNull(),
+                            onDeviceEmbeddingsEnabled = onDeviceEmbeddings,
+                            embeddingModelName = onDeviceEmbeddingModel,
+                            embeddingHuggingfaceRepo = onDeviceEmbeddingRepo
                         )
                     )
                     showSaveToast = true

@@ -14,8 +14,8 @@ import com.aiassistant.domain.repository.ChatApiRepository
 import com.aiassistant.domain.repository.MessageRepository
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.repository.TaskRepository
+import com.aiassistant.domain.service.ActiveConversation
 import com.aiassistant.domain.service.ToolManager
-import com.aiassistant.domain.tool.OnDeviceToolExecutor
 import com.aiassistant.domain.tool.ToolExecutor
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.gson.Gson
@@ -36,10 +36,10 @@ class TaskExecutor @Inject constructor(
     private val onDeviceLlmRepository: OnDeviceLlmRepository,
     private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
     private val messageRepository: MessageRepository,
+    private val activeConversation: ActiveConversation,
     @ApplicationContext private val applicationContext: Context
 ) {
     private val gson = Gson()
-    private val onDeviceToolExecutor = OnDeviceToolExecutor(applicationContext)
 
     suspend fun executeTask(
         taskId: String,
@@ -89,6 +89,7 @@ class TaskExecutor @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             try {
+                activeConversation.set("task_${task.id}")
                 val messages = buildTaskMessages(task, defaultSystemPrompt)
                 val tools = ToolManager.buildToolDefinitions()
                 var assistantContent = ""
@@ -233,7 +234,12 @@ class TaskExecutor @Inject constructor(
                     temperature = onDeviceSettings.temperature,
                     topK = onDeviceSettings.topK,
                     topP = onDeviceSettings.topP,
-                    useTools = true
+                    useTools = true,
+                    enableThinking = onDeviceSettings.enableThinking,
+                    thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                    maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                    backend = onDeviceSettings.backend,
+                    contextTokens = onDeviceSettings.contextTokens
                 )
 
               val initResult = if (needsReinit) {
@@ -243,7 +249,12 @@ class TaskExecutor @Inject constructor(
                         temperature = onDeviceSettings.temperature,
                         topK = onDeviceSettings.topK,
                         topP = onDeviceSettings.topP,
-                        useTools = true
+                        useTools = true,
+                        enableThinking = onDeviceSettings.enableThinking,
+                        thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                        maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                        backend = onDeviceSettings.backend,
+                        contextTokens = onDeviceSettings.contextTokens
                     )
                 } else {
                     Result.success(Unit)
@@ -317,6 +328,9 @@ class TaskExecutor @Inject constructor(
                         is com.aiassistant.domain.llm.OnDeviceLlmEngine.ChatEvent.Chunk -> {
                             fullResponse += event.text
                             onProgress(70f + (fullResponse.length / 100f).coerceAtMost(20f), "Receiving response...")
+                        }
+                        is com.aiassistant.domain.llm.OnDeviceLlmEngine.ChatEvent.Thinking -> {
+                            onProgress(80f, "Model reasoning...")
                         }
                         is com.aiassistant.domain.llm.OnDeviceLlmEngine.ChatEvent.Done -> {
                             fullResponse = event.response

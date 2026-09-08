@@ -9,6 +9,9 @@ import androidx.lifecycle.viewModelScope
 import com.aiassistant.data.llm.OnDeviceLlmSettingsManager
 import com.aiassistant.data.model.api.ChatMessage as ApiChatMessage
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
+import com.aiassistant.domain.service.ActiveConversation
+import com.aiassistant.domain.tool.formatMemoryContext
+import com.aiassistant.domain.usecase.MemorySearchUseCase
 import com.aiassistant.data.repository.SettingsDataRepository
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.model.Attachment
@@ -19,7 +22,6 @@ import com.aiassistant.domain.repository.ChatApiRepository
 import com.aiassistant.domain.repository.ConversationRepository
 import com.aiassistant.domain.repository.MessageRepository
 import com.aiassistant.domain.service.ToolManager
-import com.aiassistant.domain.tool.OnDeviceToolExecutor
 import com.aiassistant.domain.tool.ToolExecutor
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.gson.Gson
@@ -51,8 +53,13 @@ data class ChatUiState(
     val isOnDeviceMode: Boolean = false,
     val onDeviceDownloading: Boolean = false,
     val onDeviceDownloadProgress: Float = 0f,
-    val onDeviceEngineReady: Boolean = false
+    val onDeviceEngineReady: Boolean = false,
+    val onDeviceThinking: String? = null,
+    val onDeviceStats: String? = null,
+    val onDeviceCapabilities: OnDeviceLlmEngine.ModelCapabilities? = null
 )
+
+private const val MEMORY_INJECTION_LIMIT = 5
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
@@ -63,6 +70,8 @@ class ChatViewModel @Inject constructor(
     private val settingsRepository: SettingsDataRepository,
     private val onDeviceLlmRepository: OnDeviceLlmRepository,
     private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
+    private val memorySearchUseCase: MemorySearchUseCase,
+    private val activeConversation: ActiveConversation,
     @ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
 
@@ -76,13 +85,24 @@ class ChatViewModel @Inject constructor(
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private val gson = Gson()
-    private val onDeviceToolExecutor = OnDeviceToolExecutor(applicationContext)
 
     init {
         Log.d("ChatViewModel", "ViewModel initialized")
         loadSettings()
         loadOnDeviceSettings()
         observeOnDeviceState()
+        backfillMemoryEmbeddings()
+    }
+
+    /**
+     * Gives vectors to memories stored before an embedding model was configured, so they become
+     * findable. A no-op when embeddings are disabled or nothing is missing; capped per run.
+     */
+    private fun backfillMemoryEmbeddings() {
+        viewModelScope.launch {
+            runCatching { memorySearchUseCase.backfillEmbeddings() }
+                .onFailure { Log.w("ChatViewModel", "Memory backfill failed", it) }
+        }
     }
 
     private fun loadSettings() {
@@ -112,6 +132,7 @@ class ChatViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     onDeviceDownloading = state.isLoading,
                     onDeviceEngineReady = state.isReady,
+                    onDeviceCapabilities = state.capabilities,
                     error = state.error
                 )
                 Log.d("ChatViewModel", "On-device state: ready=${state.isReady}, loading=${state.isLoading}")
@@ -271,6 +292,9 @@ class ChatViewModel @Inject constructor(
                     content = userMessage
                 )
 
+                // Tools receive only their arguments, so remember_fact reads provenance here.
+                activeConversation.set(effectiveConversationId)
+
                 val assistantContent = if (_isOnDeviceMode.value) {
                     getOnDeviceResponse(effectiveConversationId, userMessage, attachments)
                 } else {
@@ -328,7 +352,12 @@ class ChatViewModel @Inject constructor(
             temperature = onDeviceSettings.temperature,
             topK = onDeviceSettings.topK,
             topP = onDeviceSettings.topP,
-            useTools = true
+            useTools = true,
+            enableThinking = onDeviceSettings.enableThinking,
+            thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+            maxOutputTokens = onDeviceSettings.maxOutputTokens,
+            backend = onDeviceSettings.backend,
+            contextTokens = onDeviceSettings.contextTokens
         )
 
         val initResult = if (needsReinit) {
@@ -338,7 +367,12 @@ class ChatViewModel @Inject constructor(
                 temperature = onDeviceSettings.temperature,
                 topK = onDeviceSettings.topK,
                 topP = onDeviceSettings.topP,
-                useTools = true
+                useTools = true,
+                enableThinking = onDeviceSettings.enableThinking,
+                thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                backend = onDeviceSettings.backend,
+                contextTokens = onDeviceSettings.contextTokens
             )
         } else {
             Result.success(Unit)
@@ -353,9 +387,13 @@ class ChatViewModel @Inject constructor(
             .toMutableList()
 
         onDeviceLlmRepository.resetConversation()
+        _uiState.value = _uiState.value.copy(onDeviceThinking = null, onDeviceStats = null)
 
         var fullResponse = ""
         var chatError: String? = null
+        // Channel content streams in as many small deltas (1124 chars over 229 events for a
+        // one-word prompt), so it has to accumulate rather than replace.
+        val thinkingText = StringBuilder()
 
         withContext(Dispatchers.IO) {
             onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
@@ -363,8 +401,15 @@ class ChatViewModel @Inject constructor(
                     is OnDeviceLlmEngine.ChatEvent.Chunk -> {
                         fullResponse += event.text
                     }
+                    is OnDeviceLlmEngine.ChatEvent.Thinking -> {
+                        thinkingText.append(event.text)
+                        _uiState.value =
+                            _uiState.value.copy(onDeviceThinking = thinkingText.toString())
+                    }
                     is OnDeviceLlmEngine.ChatEvent.Done -> {
                         fullResponse = event.response
+                        _uiState.value =
+                            _uiState.value.copy(onDeviceStats = event.stats?.summary())
                     }
                     is OnDeviceLlmEngine.ChatEvent.Error -> {
                         chatError = event.error
@@ -387,7 +432,7 @@ class ChatViewModel @Inject constructor(
     ): String {
         val (content, apiAttachments) = processAttachments(userMessage, attachments)
 
-        val history = buildApiMessages(conversationId)
+        val history = buildApiMessages(conversationId, userMessage)
 
         val userApiMessage = if (apiAttachments.isNotEmpty()) {
             val contentList = mutableListOf<Map<String, Any>>()
@@ -466,6 +511,30 @@ class ChatViewModel @Inject constructor(
         return assistantContent
     }
 
+    /**
+     * Retrieves stored facts relevant to [query] for injection into the prompt.
+     *
+     * Ranking is required here: unranked recent memories would be noise, so this returns null
+     * rather than falling back when embeddings are unavailable. The model can still search
+     * deliberately with the recall_facts tool.
+     */
+    private suspend fun memoryContextFor(query: String): String? {
+        val memories = runCatching {
+            memorySearchUseCase.getRelevantMemories(
+                query = query,
+                limit = MEMORY_INJECTION_LIMIT,
+                fallbackToRecent = false
+            )
+        }.getOrElse { error ->
+            Log.w("ChatViewModel", "Memory retrieval failed", error)
+            return null
+        }
+        if (memories.isNotEmpty()) {
+            Log.d("ChatViewModel", "Injecting ${memories.size} stored fact(s)")
+        }
+        return formatMemoryContext(memories)
+    }
+
     private suspend fun processAttachments(
         userMessage: String,
         attachments: List<Attachment>
@@ -542,13 +611,18 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun buildApiMessages(conversationId: String): MutableList<ApiChatMessage> {
+    private suspend fun buildApiMessages(
+        conversationId: String,
+        query: String
+    ): MutableList<ApiChatMessage> {
         val history = mutableListOf<ApiChatMessage>()
 
         val zdt = java.time.ZonedDateTime.now()
         val currentDateTime = "${zdt.format(DateTimeFormatter.ofPattern("EEEE, MMMM dd, yyyy 'at' hh:mm a z"))} (UTC${zdt.offset})"
         val effectivePrompt = (_systemPrompt.value ?: DEFAULT_SYSTEM_PROMPT).replace("[CURRENT_DATE_TIME]", currentDateTime)
         history.add(ApiChatMessage("system", effectivePrompt))
+
+        memoryContextFor(query)?.let { history.add(ApiChatMessage("system", it)) }
 
         val messages = messageRepository.getMessagesSync(conversationId)
         messages.forEach { msg ->

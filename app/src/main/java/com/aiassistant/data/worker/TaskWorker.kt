@@ -240,7 +240,12 @@ class TaskWorker(
                                 temperature = onDeviceSettings.temperature,
                                 topK = onDeviceSettings.topK,
                                 topP = onDeviceSettings.topP,
-                                useTools = true
+                                useTools = true,
+                                enableThinking = onDeviceSettings.enableThinking,
+                                thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                                maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                                backend = onDeviceSettings.backend,
+                                contextTokens = onDeviceSettings.contextTokens
                             )
 
                             if (needsReinit) {
@@ -250,7 +255,12 @@ class TaskWorker(
                                     temperature = onDeviceSettings.temperature,
                                     topK = onDeviceSettings.topK,
                                     topP = onDeviceSettings.topP,
-                                    useTools = true
+                                    useTools = true,
+                                    enableThinking = onDeviceSettings.enableThinking,
+                                    thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                                    maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                                    backend = onDeviceSettings.backend,
+                                    contextTokens = onDeviceSettings.contextTokens
                                 )
 
                                 if (!initResult.isSuccess) {
@@ -312,11 +322,14 @@ class TaskWorker(
                             var fullResponse = ""
                             var chatError: String? = null
 
-                                onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
+                            onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
                                 when (event) {
                                     is OnDeviceLlmEngine.ChatEvent.Chunk -> {
                                         fullResponse += event.text
                                         notificationHandler(applicationContext, task.title, "Receiving response...")
+                                    }
+                                    is OnDeviceLlmEngine.ChatEvent.Thinking -> {
+                                        notificationHandler(applicationContext, task.title, "Model reasoning...")
                                     }
                                     is OnDeviceLlmEngine.ChatEvent.Done -> {
                                         fullResponse = event.response

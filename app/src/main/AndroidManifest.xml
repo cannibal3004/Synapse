@@ -9,16 +9,18 @@
         <package android:name="com.termux" />
     </queries>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.BATTERY_STATS" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Attachments can come from the camera, but the app is fully usable without one. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-       <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:name=".AIAssistantApp"
@@ -31,7 +33,18 @@
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Synapse"
-        tools:targetApi="35">
+        tools:targetApi="37">
+
+        <!--
+            LiteRT-LM's GPU backend dlopens OpenCL. Since Android 12 a vendor native library must
+            be declared here or the load fails even when it exists and is listed in
+            /vendor/etc/public.libraries.txt. That is what "Can not find OpenCL library on this
+            device" actually means. required=false so the app still installs where it is absent.
+        -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL_adreno.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
+        <uses-native-library android:name="libGLES_mali.so" android:required="false" />
 
         <provider
             android:name="androidx.startup.InitializationProvider"
@@ -62,12 +75,22 @@
                 android:resource="@xml/provider_paths" />
         </provider>
 
+        <!--
+            specialUse, not dataSync: this is on-device model inference, not a data transfer.
+            dataSync is capped at 6 cumulative hours per 24h from Android 15 (which this app
+            targets) and cannot be started from BOOT_COMPLETED. The subtype below is what the
+            Play Console review reads.
+        -->
         <service
             android:name=".service.LlmService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync"
-            android:process=":llm" />
+            android:foregroundServiceType="specialUse"
+            android:process=":llm">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="on_device_llm_inference" />
+        </service>
 
     </application>
 

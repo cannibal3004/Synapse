@@ -3,6 +3,8 @@ package com.aiassistant.data.llm
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.aiassistant.domain.llm.LlmBackend
+import com.aiassistant.domain.llm.OnDeviceEmbeddingEngine
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.llm.OnDeviceLlmSettings
 import kotlinx.coroutines.flow.Flow
@@ -40,6 +42,17 @@ class OnDeviceLlmSettingsManager @Inject constructor(
                 ?: remove("top_k")
             settings.topP?.let { putFloat("top_p", it) }
                 ?: remove("top_p")
+            putBoolean("enable_thinking", settings.enableThinking)
+            settings.thinkingTokenBudget?.let { putInt("thinking_token_budget", it) }
+                ?: remove("thinking_token_budget")
+            settings.maxOutputTokens?.let { putInt("max_output_tokens", it) }
+                ?: remove("max_output_tokens")
+            putString("backend", settings.backend.name)
+            settings.contextTokens?.let { putInt("context_tokens", it) }
+                ?: remove("context_tokens")
+            putBoolean("on_device_embeddings_enabled", settings.onDeviceEmbeddingsEnabled)
+            putString("embedding_model_name", settings.embeddingModelName)
+            putString("embedding_huggingface_repo", settings.embeddingHuggingfaceRepo)
             apply()
         }
         _settings.value = settings
@@ -81,6 +94,41 @@ class OnDeviceLlmSettingsManager @Inject constructor(
         saveSettings(current.copy(topP = p))
     }
 
+    fun setEnableThinking(enabled: Boolean) {
+        val current = getSettings()
+        saveSettings(current.copy(enableThinking = enabled))
+    }
+
+    fun setThinkingTokenBudget(budget: Int?) {
+        val current = getSettings()
+        saveSettings(current.copy(thinkingTokenBudget = budget))
+    }
+
+    fun setMaxOutputTokens(tokens: Int?) {
+        val current = getSettings()
+        saveSettings(current.copy(maxOutputTokens = tokens))
+    }
+
+    fun setBackend(backend: LlmBackend) {
+        val current = getSettings()
+        saveSettings(current.copy(backend = backend))
+    }
+
+    fun setContextTokens(tokens: Int?) {
+        val current = getSettings()
+        saveSettings(current.copy(contextTokens = tokens))
+    }
+
+    fun setOnDeviceEmbeddingsEnabled(enabled: Boolean) {
+        val current = getSettings()
+        saveSettings(current.copy(onDeviceEmbeddingsEnabled = enabled))
+    }
+
+    fun setEmbeddingModel(modelName: String, repo: String) {
+        val current = getSettings()
+        saveSettings(current.copy(embeddingModelName = modelName, embeddingHuggingfaceRepo = repo))
+    }
+
     private fun SharedPreferences.toSettings(): OnDeviceLlmSettings {
         return OnDeviceLlmSettings(
             enabled = getBoolean("enabled", false),
@@ -94,13 +142,37 @@ class OnDeviceLlmSettingsManager @Inject constructor(
                 if (v >= 0f) v else null
             },
             topK = run {
+                // 0 is not a valid topK, so it reads back as "unset" rather than as a value.
                 val v = getInt("top_k", -1)
-                if (v >= 0) v else null
+                if (v > 0) v else null
             },
             topP = run {
                 val v = getFloat("top_p", -1f)
-                if (v >= 0f) v else null
-            }
+                if (v > 0f) v else null
+            },
+            enableThinking = getBoolean("enable_thinking", false),
+            thinkingTokenBudget = run {
+                val v = getInt("thinking_token_budget", -1)
+                if (v > 0) v else null
+            },
+            maxOutputTokens = run {
+                val v = getInt("max_output_tokens", -1)
+                if (v > 0) v else null
+            },
+            backend = LlmBackend.fromName(getString("backend", null)),
+            contextTokens = run {
+                val v = getInt("context_tokens", -1)
+                if (v > 0) v else null
+            },
+            onDeviceEmbeddingsEnabled = getBoolean("on_device_embeddings_enabled", false),
+            embeddingModelName = getString(
+                "embedding_model_name",
+                OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_MODEL_NAME
+            ) ?: OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_MODEL_NAME,
+            embeddingHuggingfaceRepo = getString(
+                "embedding_huggingface_repo",
+                OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_REPO
+            ) ?: OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_REPO
         )
     }
 
