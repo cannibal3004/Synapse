@@ -237,6 +237,8 @@ class OnDeviceLlmEngine(
                     "contextTokens=${config.contextTokens} capabilities=$caps"
             )
 
+            applyEngineFlags(caps)
+
             // Only name a vision/audio backend when the bundle actually carries that encoder.
             // Naming one it lacks turns a skippable warning into a hard createConversation
             // failure ("TF_LITE_AUDIO_ENCODER_HW not found in the model") -- gemma's -gpu bundle
@@ -504,7 +506,7 @@ class OnDeviceLlmEngine(
             Log.w(TAG, "Model reports no function-calling support; offering tools anyway")
         }
 
-        applyExperimentalFlags(config, caps)
+        applyConversationFlags(config)
 
         val conv = eng.createConversation(
             buildConversationConfig(config, caps, useTools = config.useTools)
@@ -523,7 +525,20 @@ class OnDeviceLlmEngine(
     }
 
     /**
-     * Applies the process-global experimental flags for this conversation.
+     * Flags read when the *Engine* is built. Setting these later is silently ignored, which shows
+     * up as "Benchmark is not enabled. Please make sure the BenchmarkParams is set in the
+     * EngineSettings" and, less visibly, as speculative decoding never turning on. Must be called
+     * before `Engine(...)`.
+     */
+    @OptIn(ExperimentalApi::class)
+    private fun applyEngineFlags(caps: ModelCapabilities) {
+        ExperimentalFlags.enableSpeculativeDecoding = caps.supportsSpeculativeDecoding
+        // Cheap timing counters; without this BenchmarkInfo throws instead of reporting tok/s.
+        ExperimentalFlags.enableBenchmark = true
+    }
+
+    /**
+     * Flags read when a *Conversation* is created.
      *
      * `ExperimentalFlags` is a singleton, so every field must be set on every path -- leaving one
      * alone lets a previous model's value leak into the next.
@@ -534,11 +549,7 @@ class OnDeviceLlmEngine(
      * Hugging Face include it.
      */
     @OptIn(ExperimentalApi::class)
-    private fun applyExperimentalFlags(config: ActiveConfig, caps: ModelCapabilities) {
-        ExperimentalFlags.enableSpeculativeDecoding = caps.supportsSpeculativeDecoding
-        // Cheap timing counters; needed for BenchmarkInfo to report tokens/sec.
-        ExperimentalFlags.enableBenchmark = true
-
+    private fun applyConversationFlags(config: ActiveConfig) {
         val template = promptTemplate(config.modelPath)
         ExperimentalFlags.overwritePromptTemplate = template
         if (template != null) {
