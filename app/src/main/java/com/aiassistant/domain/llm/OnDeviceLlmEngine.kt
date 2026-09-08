@@ -382,8 +382,23 @@ class OnDeviceLlmEngine(
                     return@flow
                 }
 
+                // Budget the payload against what the KV can still take, shared across the
+                // calls in this round. Checking only current usage is not enough: two 1500-char
+                // web pages overflow a 4096-token context, and on some bundles that surfaces as
+                // garbage logits ("Invalid decode and sample result") rather than a clean error.
+                val perToolChars = toolResultBudget(conv, toolCalls.size)
+                if (perToolChars < MIN_USEFUL_TOOL_CHARS) {
+                    Log.w(TAG, "Not enough context left for ${toolCalls.size} tool result(s)")
+                    responseText.append(
+                        "\n\n_Stopped calling tools: not enough context left for the results._"
+                    )
+                    emit(ChatEvent.Done(responseText.toString(), readStats(conv)))
+                    return@flow
+                }
+
                 val toolResponses = toolCalls.map { toolCall ->
-                    val resultJson = executeToolCall(toolCall.name, toolCall.arguments)
+                    val resultJson =
+                        executeToolCall(toolCall.name, toolCall.arguments, perToolChars)
                     Content.ToolResponse(toolCall.name, resultJson)
                 }
 
@@ -809,22 +824,43 @@ class OnDeviceLlmEngine(
     }
 
     /**
-     * Tool output goes back into the prompt verbatim, so an untruncated web page can consume a
-     * small model's entire context in one round.
+     * Characters of tool output this round can afford, per call.
+     *
+     * Tool output goes back into the prompt verbatim, so it has to fit in the KV that is left,
+     * not in a fixed constant. Returns below [MIN_USEFUL_TOOL_CHARS] when there is no room worth
+     * using, which the caller treats as "stop looping".
      */
-    private fun truncateToolResult(name: String, result: String): String {
-        if (result.length <= MAX_TOOL_RESULT_CHARS) return result
-        Log.d(TAG, "Truncating $name result from ${result.length} to $MAX_TOOL_RESULT_CHARS chars")
-        return result.take(MAX_TOOL_RESULT_CHARS) + "\u2026[truncated]"
+    private fun toolResultBudget(conv: Conversation, toolCount: Int): Int {
+        if (toolCount <= 0) return 0
+        val used = runCatching { conv.getTokenCount() }.getOrNull()
+            ?: return MAX_TOOL_RESULT_CHARS
+        val ceiling = (effectiveCapacity() * CONTEXT_PRESSURE_FRACTION).toInt()
+        val headroomChars = (ceiling - used).coerceAtLeast(0) * CHARS_PER_TOKEN
+        val perTool = (headroomChars / toolCount).coerceAtMost(MAX_TOOL_RESULT_CHARS)
+        Log.d(
+            TAG,
+            "Tool budget: used=$used ceiling=$ceiling -> $perTool chars x $toolCount call(s)"
+        )
+        return perTool
     }
 
-    private fun executeToolCall(name: String, arguments: Map<String, Any?>): String {
+    private fun truncateToolResult(name: String, result: String, limit: Int): String {
+        if (result.length <= limit) return result
+        Log.d(TAG, "Truncating $name result from ${result.length} to $limit chars")
+        return result.take(limit) + "\u2026[truncated]"
+    }
+
+    private fun executeToolCall(
+        name: String,
+        arguments: Map<String, Any?>,
+        resultLimit: Int = MAX_TOOL_RESULT_CHARS
+    ): String {
         val tool = toolsByName[name] ?: run {
             Log.w(TAG, "Unknown tool: $name")
             return gson.toJson(mapOf("error" to "Tool not found: $name"))
         }
         return try {
-            val result = truncateToolResult(name, tool.execute(gson.toJson(arguments)))
+            val result = truncateToolResult(name, tool.execute(gson.toJson(arguments)), resultLimit)
             Log.d(TAG, "Tool $name result: ${result.take(80)}")
             result
         } catch (e: Exception) {
@@ -868,6 +904,12 @@ class OnDeviceLlmEngine(
         private const val MAX_TOOL_ROUNDS = 25
         private const val TOOL_LOOP_BUDGET_MS = 3 * 60 * 1000L
         private const val MAX_TOOL_RESULT_CHARS = 1500
+
+        /** Below this a truncated tool result carries too little to be worth the context. */
+        private const val MIN_USEFUL_TOOL_CHARS = 250
+
+        /** Rough chars-per-token for budgeting. Deliberately low, so the estimate over-reserves. */
+        private const val CHARS_PER_TOKEN = 3
 
         /**
          * Fraction of the allocated KV budget at which tool looping stops.
