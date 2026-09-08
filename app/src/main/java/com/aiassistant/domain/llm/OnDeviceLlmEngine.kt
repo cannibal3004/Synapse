@@ -443,7 +443,7 @@ class OnDeviceLlmEngine(
             samplerConfig = samplerConfig,
             tools = if (useTools) toolExecutor.getAllTools().map { tool(it) } else emptyList(),
             automaticToolCalling = false,
-            channels = if (thinkingEnabled) THINKING_CHANNELS else emptyList(),
+            channels = if (thinkingEnabled) thinkingChannels(config.modelPath) else emptyList(),
             // Always bounded. Left unset, generation runs until EOS or the KV limit
             // (MAX_NUM_TOKENS), which on CPU is tens of minutes for a model that does not stop
             // promptly. The user's setting overrides this.
@@ -632,6 +632,29 @@ class OnDeviceLlmEngine(
     }.onSuccess { Log.d(TAG, "Generation: ${it.summary()}") }
         .onFailure { Log.w(TAG, "BenchmarkInfo unavailable", it) }
         .getOrNull()
+
+    /**
+     * Reasoning-channel delimiters, which differ per model family: Spark and Qwen use
+     * `<think>...</think>`, gemma uses `<|channel>...<channel|>`. Declaring the wrong pair means
+     * the runtime never routes the reasoning and the raw delimiters land in the answer.
+     *
+     * All known dialects are declared at once -- a pair that never appears simply never matches,
+     * and `chatStream` routes whatever channels come back rather than one name. A model with its
+     * own spelling can add it in the sidecar:
+     *
+     *   { "thinkingChannels": [ { "name": "x", "start": "<a>", "end": "</a>" } ] }
+     */
+    private fun thinkingChannels(modelPath: String): List<Channel> {
+        val configured = sidecarConfig(modelPath)?.getAsJsonArray("thinkingChannels")
+            ?: return DEFAULT_THINKING_CHANNELS
+        return runCatching {
+            configured.map { entry ->
+                val o = entry.asJsonObject
+                Channel(o.get("name").asString, o.get("start").asString, o.get("end").asString)
+            }
+        }.onFailure { Log.w(TAG, "Ignoring malformed thinkingChannels", it) }
+            .getOrDefault(DEFAULT_THINKING_CHANNELS)
+    }
 
     private fun sidecarFlag(modelPath: String, key: String): Boolean =
         sidecarConfig(modelPath)?.get(key)?.asBoolean ?: false
@@ -867,9 +890,10 @@ class OnDeviceLlmEngine(
         )
         private const val MEMORY_INJECTION_LIMIT = 5
 
-        private const val THINKING_CHANNEL = "thinking"
-        private val THINKING_CHANNELS = listOf(
-            Channel(THINKING_CHANNEL, "<think>", "</think>")
+        /** Non-overlapping, so declaring all of them is safe for any single model. */
+        private val DEFAULT_THINKING_CHANNELS = listOf(
+            Channel("thinking", "<think>", "</think>"),
+            Channel("thought", "<|channel>", "<channel|>")
         )
     }
 }
