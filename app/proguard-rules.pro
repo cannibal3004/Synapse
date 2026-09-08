@@ -1,40 +1,78 @@
-# Copyright (c) 2023 by OpenAI (https://openai.com)
-#
-# Copyright 2023 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# Add any specific rules for your app here.
-
-# Retrofit
+# Keep generic signatures and annotations: Gson and Retrofit both read them at runtime.
 -keepattributes Signature
 -keepattributes Exceptions
--keepclassmembers interfaces!** {
-    @retrofit2.http.<methods>;
+-keepattributes *Annotation*
+-keepattributes InnerClasses
+-keepattributes EnclosingMethod
+
+# ---------------------------------------------------------------------------
+# LiteRT-LM
+#
+# The AAR ships no consumer rules of its own. Its JNI layer passes Kotlin
+# config objects across the native boundary and reads their fields by name, so
+# obfuscating them breaks inference at runtime rather than at build time. The
+# library also uses kotlin-reflect to build tool descriptions.
+# ---------------------------------------------------------------------------
+-keep class com.google.ai.edge.litertlm.** { *; }
+-keepclassmembers class com.google.ai.edge.litertlm.** {
+    native <methods>;
+}
+-keep,allowobfuscation class kotlin.reflect.** { *; }
+-keep class kotlin.Metadata { *; }
+-dontwarn com.google.ai.edge.litertlm.**
+
+# ---------------------------------------------------------------------------
+# Gson
+#
+# Anything deserialised by field name must keep its field names. This includes
+# the engine state that crosses the LlmService process boundary as JSON.
+# ---------------------------------------------------------------------------
+-keep class com.aiassistant.data.model.** { *; }
+-keep class com.aiassistant.domain.model.** { *; }
+-keep class com.aiassistant.domain.llm.OnDeviceLlmEngine$EngineState { *; }
+-keep class com.aiassistant.domain.llm.OnDeviceLlmEngine$ModelCapabilities { *; }
+-keep class com.aiassistant.domain.llm.OnDeviceLlmSettings { *; }
+-keepclassmembers,allowobfuscation class * {
+    @com.google.gson.annotations.SerializedName <fields>;
+}
+-dontwarn sun.misc.**
+
+# ---------------------------------------------------------------------------
+# Retrofit
+# ---------------------------------------------------------------------------
+-keep,allowobfuscation interface * {
+    @retrofit2.http.* <methods>;
 }
 -keepclasseswithmembers class * {
     @retrofit2.http.* <methods>;
 }
+-if interface * { @retrofit2.http.* <methods>; }
+-keep,allowobfuscation interface <1>
+-keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
+-keep,allowobfuscation,allowshrinking class retrofit2.Response
+-dontwarn retrofit2.**
 
-# Gson
--keepattributes Signature
--keepattributes *Annotation*
--dontwarn sun.misc.**
--keep class com.aiassistant.data.model.** { *; }
--keep class com.aiassistant.domain.model.** { *; }
+# ---------------------------------------------------------------------------
+# OkHttp / Okio: optional TLS providers are absent at runtime.
+# ---------------------------------------------------------------------------
+-dontwarn okhttp3.internal.platform.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
+-dontwarn okio.**
 
-# Room
+# ---------------------------------------------------------------------------
+# Room: keep the app's entities and generated DAO implementations.
+# ---------------------------------------------------------------------------
 -keep class com.aiassistant.data.database.** { *; }
 
-# Coroutines
--keepclassmembers fn.*CoroutineSuspend { *; }
+# ---------------------------------------------------------------------------
+# Rhino (code interpreter tool): resolves its own classes reflectively.
+# ---------------------------------------------------------------------------
+-keep class org.mozilla.javascript.** { *; }
+-dontwarn org.mozilla.javascript.**
+
+# ---------------------------------------------------------------------------
+# Jsoup
+# ---------------------------------------------------------------------------
+-dontwarn org.jsoup.**
