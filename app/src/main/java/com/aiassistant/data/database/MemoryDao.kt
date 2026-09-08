@@ -26,4 +26,10 @@ interface MemoryDao {
 
     @Query("SELECT * FROM memory_entries LIMIT :limit")
     suspend fun getMemoriesForEmbedding(limit: Int = 100): List<MemoryEntryEntity>
+
+    @Query("SELECT * FROM memory_entries WHERE embedding = '[]' OR embedding = '' ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getMemoriesWithoutEmbedding(limit: Int): List<MemoryEntryEntity>
+
+    @Query("UPDATE memory_entries SET embedding = :embedding WHERE id = :id")
+    suspend fun updateMemoryEmbedding(id: String, embedding: String)
 }

@@ -56,9 +56,13 @@ class MemoryRepositoryImpl(
         memoryDao.deleteMemoriesByConversation(conversationId)
     }
 
+    /**
+     * Returns recent memories as *candidates*; it does no semantic matching itself, so [query] is
+     * unused here. Ranking against the query happens in MemorySearchUseCase, which has the
+     * embedding model. Returns exactly [limit] rows — the caller decides how wide the pool is.
+     */
     override suspend fun getSimilarMemories(query: String, limit: Int): List<MemoryEntry> {
-        val allMemories = memoryDao.getRecentMemories(limit * 10)
-        return allMemories.map { it.toDomain() }
+        return memoryDao.getRecentMemories(limit).map { it.toDomain() }
     }
 
     override suspend fun addMemoryFromText(
@@ -75,6 +79,14 @@ class MemoryRepositoryImpl(
             timestamp = System.currentTimeMillis()
         )
         memoryDao.insertMemory(entity)
+    }
+
+    override suspend fun getMemoriesWithoutEmbedding(limit: Int): List<MemoryEntry> {
+        return memoryDao.getMemoriesWithoutEmbedding(limit).map { it.toDomain() }
+    }
+
+    override suspend fun updateEmbedding(id: String, embedding: List<Float>) {
+        memoryDao.updateMemoryEmbedding(id, com.google.gson.Gson().toJson(embedding))
     }
 
     private fun MemoryEntryEntity.toDomain(): MemoryEntry {

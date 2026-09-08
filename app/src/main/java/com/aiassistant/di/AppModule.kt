@@ -49,7 +49,11 @@ object AppModule {
             context,
             AppDatabase::class.java,
             "ai_assistant_database"
-        ).fallbackToDestructiveMigration()
+        ).fallbackToDestructiveMigration(dropAllTables = true)
+            // The database is opened in both the app process and :llm (the on-device engine's
+            // memory tools), so invalidation has to cross the process boundary or one side's
+            // Flows go stale after the other writes.
+            .enableMultiInstanceInvalidation()
             .build()
     }
 
@@ -89,8 +93,11 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideMemorySearchUseCase(repository: MemoryRepository) =
-        MemorySearchUseCase(repository)
+    fun provideMemorySearchUseCase(
+        repository: MemoryRepository,
+        embeddingProvider: com.aiassistant.domain.repository.EmbeddingProvider,
+        vectorMathService: VectorMathService
+    ) = MemorySearchUseCase(repository, embeddingProvider, vectorMathService)
 
     @Provides
     @Singleton
@@ -140,8 +147,18 @@ object AppModule {
         onDeviceLlmRepository: OnDeviceLlmRepository,
         onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
         messageRepository: MessageRepository,
+        activeConversation: com.aiassistant.domain.service.ActiveConversation,
         @ApplicationContext context: Context
-    ) = TaskExecutor(chatApiRepository, taskRepository, toolExecutor, onDeviceLlmRepository, onDeviceLlmSettingsManager, messageRepository, context)
+    ) = TaskExecutor(
+        chatApiRepository,
+        taskRepository,
+        toolExecutor,
+        onDeviceLlmRepository,
+        onDeviceLlmSettingsManager,
+        messageRepository,
+        activeConversation,
+        context
+    )
 
     @Provides
     @Singleton
@@ -161,4 +178,9 @@ object AppModule {
     @Singleton
     fun provideLlmClient(@ApplicationContext context: Context) =
         com.aiassistant.client.LlmClient(context)
+
+    @Provides
+    @Singleton
+    fun provideOnDeviceEmbeddingEngine(@ApplicationContext context: Context) =
+        com.aiassistant.domain.llm.OnDeviceEmbeddingEngine(context)
 }

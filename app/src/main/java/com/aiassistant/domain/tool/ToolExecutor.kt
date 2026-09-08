@@ -1,5 +1,8 @@
 package com.aiassistant.domain.tool
 
+import com.aiassistant.domain.service.ActiveConversation
+import com.aiassistant.domain.service.ToolManager
+import com.aiassistant.domain.usecase.MemorySearchUseCase
 import javax.inject.Inject
 
 class ToolExecutor @Inject constructor(
@@ -9,8 +12,19 @@ class ToolExecutor @Inject constructor(
     private val webPageFetcherTool: WebPageFetcherTool,
     private val codeInterpreterTool: CodeInterpreterTool,
     private val deviceInfoTool: DeviceInfoTool,
-    private val termuxShellTool: TermuxShellTool
+    private val termuxShellTool: TermuxShellTool,
+    memory: MemorySearchUseCase,
+    activeConversation: ActiveConversation
 ) {
+
+    // Shares the on-device tool definitions rather than restating their schemas here.
+    private val rememberFactTool = RememberFactTool(memory) { activeConversation.id }
+    private val recallFactsTool = RecallFactsTool(memory)
+
+    init {
+        ToolManager.registerOpenApiTool(rememberFactTool)
+        ToolManager.registerOpenApiTool(recallFactsTool)
+    }
 
     fun executeTool(name: String, arguments: String): String {
         return try {
@@ -52,6 +66,8 @@ class ToolExecutor @Inject constructor(
                     val timeout = (args["timeout"] as? Number)?.toInt() ?: 30
                     termuxShellTool.executeCommand(command, arguments, script, workdir, timeout)
                 }
+                "remember_fact" -> rememberFactTool.execute(arguments)
+                "recall_facts" -> recallFactsTool.execute(arguments)
                 else -> "Error: Unknown tool '$name'"
             }
         } catch (e: Exception) {

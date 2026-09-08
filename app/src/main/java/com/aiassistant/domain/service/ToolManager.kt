@@ -3,6 +3,7 @@ package com.aiassistant.domain.service
 import com.aiassistant.domain.model.ToolCall
 import com.aiassistant.domain.model.ToolResult
 import com.google.gson.Gson
+import com.google.gson.JsonObject
 
 object ToolManager {
     private val gson = Gson()
@@ -18,6 +19,22 @@ object ToolManager {
 
     fun registerTool(definition: ToolDefinition) {
         registeredTools[definition.name] = definition
+    }
+
+    /**
+     * Registers a tool that already describes itself in OpenAPI form, reusing that single schema
+     * for the API path instead of restating it here. Used by the memory tools, which are shared
+     * with the on-device engine.
+     */
+    fun registerOpenApiTool(tool: com.google.ai.edge.litertlm.OpenApiTool) {
+        val schema = gson.fromJson(tool.getToolDescriptionJsonString(), JsonObject::class.java)
+        val name = schema.get("name").asString
+        registeredTools[name] = ToolDefinition(
+            name = name,
+            description = schema.get("description")?.asString.orEmpty(),
+            parameters = gson.fromJson(schema.get("parameters"), Map::class.java),
+            executor = { arguments -> runCatching { tool.execute(arguments) } }
+        )
     }
 
     fun unregisterTool(name: String) {
