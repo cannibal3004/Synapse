@@ -6,7 +6,6 @@ import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.NativeObject
 import org.mozilla.javascript.NativeArray
 import org.mozilla.javascript.Undefined
-import org.mozilla.javascript.tools.shell.Global
 import javax.inject.Inject
 
 class CodeInterpreterTool @Inject constructor() {
@@ -61,9 +60,8 @@ class CodeInterpreterTool @Inject constructor() {
     private fun executeJavaScript(code: String): String {
         val cx = Context.enter()
         return try {
-            cx.setOptimizationLevel(-1)
-            val global = Global(cx)
-            val scope: Scriptable = cx.newObject(global)
+            cx.setInterpretedMode(true)
+            val scope: Scriptable = cx.initStandardObjects()
 
             val result = cx.evaluateString(
                 scope,

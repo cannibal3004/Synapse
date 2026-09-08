@@ -94,7 +94,7 @@ class WebSearchTool @Inject constructor(
             val response = httpClient.newCall(request).execute()
             Log.d(TAG, "Exa response code: ${response.code}")
 
-            val responseBody = response.body?.string() ?: "{}"
+            val responseBody = response.body.string()
             Log.d(TAG, "Exa response: $responseBody")
 
             if (!response.isSuccessful) {

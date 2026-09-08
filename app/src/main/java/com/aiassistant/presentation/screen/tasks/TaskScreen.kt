@@ -10,6 +10,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,7 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.font.FontWeight
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.aiassistant.domain.model.ScheduleType
 import com.aiassistant.domain.model.ScheduledTask
 import com.aiassistant.domain.model.TaskExecutionHistory
@@ -323,7 +324,7 @@ private fun TaskCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Divider()
+            HorizontalDivider()
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -597,7 +598,7 @@ private fun TaskFormDialog(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             IconButton(onClick = { showCronHelp = !showCronHelp }) {
-                                Icon(Icons.Default.Help, "Cron Help")
+                                Icon(Icons.AutoMirrored.Filled.Help, "Cron Help")
                             }
                         }
                         if (showCronHelp) {
