@@ -239,16 +239,24 @@ class OnDeviceLlmEngine(
 
             applyEngineFlags(caps)
 
-            // Only name a vision/audio backend when the bundle actually carries that encoder.
-            // Naming one it lacks turns a skippable warning into a hard createConversation
-            // failure ("TF_LITE_AUDIO_ENCODER_HW not found in the model") -- gemma's -gpu bundle
-            // is text-only while its CPU bundle is multi-modal. Audio stays on CPU when present,
-            // per the docs' multi-modal compliance note.
+            // This path is text-only: chatStream reads lastUserMessage.content and attachments
+            // never reach the engine. Naming a vision or audio backend makes the runtime build
+            // and repack those encoders regardless -- measured at ~320 MB of XNNPack cache for
+            // gemma-4-E2B, in a process that is already the low-memory killer's first pick. So
+            // they stay off unless a model's sidecar opts in, and even then only if the bundle
+            // actually carries the encoder: naming one it lacks turns a skippable warning into a
+            // hard failure ("TF_LITE_AUDIO_ENCODER_HW not found in the model").
+            val useVision = caps.supportsVision && sidecarFlag(modelPath, "enableVision")
+            val useAudio = caps.supportsAudio && sidecarFlag(modelPath, "enableAudio")
+            Log.d(TAG, "Modalities: vision=$useVision audio=$useAudio")
+
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
                 backend = litertBackend(config.backend),
-                visionBackend = if (caps.supportsVision) litertBackend(config.backend) else null,
-                audioBackend = if (caps.supportsAudio) Backend.CPU() else null,
+                visionBackend = if (useVision) litertBackend(config.backend) else null,
+                // Audio stays on CPU even when the main backend is accelerated, per the docs'
+                // multi-modal compliance note.
+                audioBackend = if (useAudio) Backend.CPU() else null,
                 maxNumTokens = config.contextTokens,
                 cacheDir = context.cacheDir.path
             )
