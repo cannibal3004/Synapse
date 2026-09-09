@@ -7,6 +7,7 @@ import com.aiassistant.domain.model.MessageRole
 import com.aiassistant.domain.repository.MessageRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import com.google.gson.reflect.TypeToken
 import java.util.UUID
 
 class MessageRepositoryImpl(
@@ -28,7 +29,8 @@ class MessageRepositoryImpl(
     override suspend fun addMessage(
         conversationId: String,
         role: String,
-        content: String
+        content: String,
+        activity: List<com.aiassistant.domain.model.TurnActivity>?
     ): String {
         val id = UUID.randomUUID().toString()
         val entity = MessageEntity(
@@ -36,7 +38,8 @@ class MessageRepositoryImpl(
             conversationId = conversationId,
             role = role,
             content = content,
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            activity = activity?.takeIf { it.isNotEmpty() }?.let { activityGson.toJson(it) }
         )
         messageDao.insertMessage(entity)
         return id
@@ -95,7 +98,68 @@ class MessageRepositoryImpl(
             content = content,
             timestamp = timestamp,
             toolCalls = toolCalls?.let { gson.fromJson(it, Array<com.aiassistant.domain.model.ToolCall>::class.java) }?.toList(),
-            toolResults = toolResults?.let { gson.fromJson(it, Array<com.aiassistant.domain.model.ToolResult>::class.java) }?.toList()
+            toolResults = toolResults?.let { gson.fromJson(it, Array<com.aiassistant.domain.model.ToolResult>::class.java) }?.toList(),
+            activity = activity?.let {
+                runCatching {
+                    activityGson.fromJson(
+                        it,
+                        object : TypeToken<List<com.aiassistant.domain.model.TurnActivity>>() {}.type
+                    ) as List<com.aiassistant.domain.model.TurnActivity>
+                }.getOrNull()
+            }
         )
+    }
+}
+
+/**
+ * TurnActivity is a sealed interface, so Gson needs to be told which subtype a row holds.
+ * RuntimeTypeAdapterFactory is not in the core artifact, so the discriminator is written by hand.
+ */
+private val activityGson: com.google.gson.Gson = com.google.gson.GsonBuilder()
+    .registerTypeAdapter(
+        com.aiassistant.domain.model.TurnActivity::class.java,
+        TurnActivitySerializer()
+    )
+    .create()
+
+private class TurnActivitySerializer :
+    com.google.gson.JsonSerializer<com.aiassistant.domain.model.TurnActivity>,
+    com.google.gson.JsonDeserializer<com.aiassistant.domain.model.TurnActivity> {
+
+    override fun serialize(
+        src: com.aiassistant.domain.model.TurnActivity,
+        typeOfSrc: java.lang.reflect.Type,
+        context: com.google.gson.JsonSerializationContext
+    ): com.google.gson.JsonElement {
+        val obj = com.google.gson.JsonObject()
+        when (src) {
+            is com.aiassistant.domain.model.TurnActivity.Thought -> {
+                obj.addProperty("kind", "thought")
+                obj.addProperty("text", src.text)
+            }
+            is com.aiassistant.domain.model.TurnActivity.ToolRun -> {
+                obj.addProperty("kind", "tool")
+                obj.addProperty("name", src.name)
+                obj.addProperty("arguments", src.arguments)
+            }
+        }
+        return obj
+    }
+
+    override fun deserialize(
+        json: com.google.gson.JsonElement,
+        typeOfT: java.lang.reflect.Type,
+        context: com.google.gson.JsonDeserializationContext
+    ): com.aiassistant.domain.model.TurnActivity {
+        val obj = json.asJsonObject
+        return when (obj.get("kind")?.asString) {
+            "tool" -> com.aiassistant.domain.model.TurnActivity.ToolRun(
+                name = obj.get("name")?.asString.orEmpty(),
+                arguments = obj.get("arguments")?.asString.orEmpty()
+            )
+            else -> com.aiassistant.domain.model.TurnActivity.Thought(
+                text = obj.get("text")?.asString.orEmpty()
+            )
+        }
     }
 }

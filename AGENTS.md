@@ -381,6 +381,22 @@ int4 on CPU matches int8-on-GPU decode at a third of the memory, which matters b
 what drives the OOM kills. The context tax and the GPU int4 defect together mean there is no
 configuration here that reaches the context an agentic loop wants; 4096-8192 is the usable range.
 
+### Open: on-device tool calls are invisible to the UI
+
+The chat transcript shows a turn's reasoning and tool calls together in one activity row, built
+from `TurnActivity` (`Thought` / `ToolRun`) and persisted on the assistant message. The cloud path
+fills both kinds. **On-device fills only `Thought`.**
+
+Tool calls there execute inside `chatStream` in the `:llm` process, and the only things that cross
+the Messenger boundary are `Chunk`, `Thinking`, `Done` and `Error` -- there is no event for "a tool
+started", so the row shows the reasoning around a call but never the call. A turn that spends two
+minutes in `web_fetch` looks idle.
+
+The fix is a `ChatEvent.ToolStarted(name, arguments)` emitted from the round loop where
+`executeToolCall` is invoked, a `CB_TOOL_STARTED` in `LlmIpc`, and a branch in `LlmClient` -- the
+same shape as `CB_THINKING`. Worth doing next time the on-device path is touched; it is not worth a
+trip on its own while int4 is pinned to CPU.
+
 ### Historical measurements (before the workarounds)
 
 Why the two workarounds exist, measured before they were added:

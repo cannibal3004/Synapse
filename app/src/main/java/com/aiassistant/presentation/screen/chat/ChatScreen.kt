@@ -49,7 +49,7 @@ import com.aiassistant.domain.model.MessageRole
 import com.aiassistant.domain.model.ToolCall
 import com.aiassistant.presentation.vm.ChatViewModel
 import com.aiassistant.presentation.vm.ChatUiState
-import com.aiassistant.presentation.vm.TurnActivity
+import com.aiassistant.domain.model.TurnActivity
 import com.google.gson.JsonParser
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberPermissionState
@@ -443,43 +443,16 @@ fun ChatScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // One activity row per turn, in a position that does not move: after your
-                // message, above the reply. The tool chips for this turn are dropped from the
-                // transcript because the row already carries them -- injecting them separately
-                // is what shifted everything under the reader mid-read.
-                val awaitingFirstText =
-                    uiState.isLoading && uiState.streamingResponse.isNullOrBlank()
-                val showActivity = uiState.activity.isNotEmpty() || awaitingFirstText
-                val lastUser = groupedMessages.indexOfLast { it.message?.role == MessageRole.USER }
-                val transcript = if (uiState.activity.isEmpty()) {
-                    groupedMessages
-                } else {
-                    groupedMessages.filterIndexed { index, group ->
-                        !(index > lastUser && group.isAssistantToolCalls)
-                    }
-                }
-                val holdBackReply = showActivity &&
-                    uiState.streamingResponse == null &&
-                    transcript.lastOrNull()?.message?.role == MessageRole.ASSISTANT
-                val leading = if (holdBackReply) transcript.dropLast(1) else transcript
-
-                items(leading, key = ::messageGroupKey) { group ->
+                items(groupedMessages, key = ::messageGroupKey) { group ->
                     MessageGroupRow(group)
                 }
 
-                if (showActivity) {
+                // Live row only while the turn is in flight. Once the reply is persisted it
+                // carries its own activity and draws it directly above itself, so the row keeps
+                // its position through the hand-off instead of being swapped for something else.
+                if (uiState.isLoading) {
                     item(key = "activity") {
-                        ActivityRow(
-                            activity = uiState.activity,
-                            running = uiState.isLoading
-                        )
-                    }
-                }
-
-                if (holdBackReply) {
-                    val reply = transcript.last()
-                    item(key = messageGroupKey(reply)) {
-                        MessageGroupRow(reply)
+                        ActivityRow(activity = uiState.activity, running = true)
                     }
                 }
 
@@ -778,9 +751,19 @@ private fun messageGroupKey(group: MessageGroup): Any =
 @Composable
 private fun MessageGroupRow(group: MessageGroup) {
     if (group.isAssistantToolCalls) {
+        // Only reached by conversations recorded before the activity was stored on the reply.
         ToolCallIndicator(group.toolCalls)
+        return
+    }
+    val message = group.message ?: return
+    val activity = message.activity
+    if (activity.isNullOrEmpty()) {
+        MessageBubble(message)
     } else {
-        group.message?.let { MessageBubble(it) }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActivityRow(activity = activity, running = false)
+            MessageBubble(message)
+        }
     }
 }
 

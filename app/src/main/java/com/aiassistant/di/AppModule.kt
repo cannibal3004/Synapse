@@ -28,6 +28,8 @@ import com.aiassistant.domain.usecase.TaskExecutor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
@@ -49,7 +51,10 @@ object AppModule {
             context,
             AppDatabase::class.java,
             "ai_assistant_database"
-        ).fallbackToDestructiveMigration(dropAllTables = true)
+        ).addMigrations(MIGRATION_4_5)
+            // Still the fallback for anything without an explicit migration, but adding a column
+            // does not need to cost anyone their history.
+            .fallbackToDestructiveMigration(dropAllTables = true)
             // The database is opened in both the app process and :llm (the on-device engine's
             // memory tools), so invalidation has to cross the process boundary or one side's
             // Flows go stale after the other writes.
@@ -183,4 +188,11 @@ object AppModule {
     @Singleton
     fun provideOnDeviceEmbeddingEngine(@ApplicationContext context: Context) =
         com.aiassistant.domain.llm.OnDeviceEmbeddingEngine(context)
+}
+
+/** Adds `messages.activity`; see MessageEntity. Nullable, so existing rows need no backfill. */
+private val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN activity TEXT")
+    }
 }

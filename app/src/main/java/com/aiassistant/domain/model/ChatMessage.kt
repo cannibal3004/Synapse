@@ -13,7 +13,8 @@ data class ChatMessage(
     val timestamp: Long,
     val attachments: List<Attachment> = emptyList(),
     val toolCalls: List<ToolCall>? = null,
-    val toolResults: List<ToolResult>? = null
+    val toolResults: List<ToolResult>? = null,
+    val activity: List<TurnActivity>? = null
 ) : Parcelable
 
 @Parcelize

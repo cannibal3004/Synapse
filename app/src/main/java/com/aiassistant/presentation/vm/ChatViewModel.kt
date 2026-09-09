@@ -12,6 +12,7 @@ import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.service.ActiveConversation
 import com.aiassistant.domain.tool.formatMemoryContext
 import com.aiassistant.data.model.api.StreamEvent
+import com.aiassistant.domain.model.TurnActivity
 import com.aiassistant.domain.usecase.MemorySearchUseCase
 import com.aiassistant.data.repository.SettingsDataRepository
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
@@ -42,18 +43,6 @@ import java.time.format.DateTimeFormatter
 import java.time.ZonedDateTime
 import javax.inject.Inject
 import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
-
-/**
- * One step of a turn, in the order it happened.
- *
- * Reasoning and tool calls used to be two separate pieces of UI that appeared and disappeared at
- * different moments, which shifted the transcript under the reader. They are one sequence now, so
- * one row can show all of it.
- */
-sealed interface TurnActivity {
-    data class Thought(val text: String) : TurnActivity
-    data class ToolRun(val name: String, val arguments: String) : TurnActivity
-}
 
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
@@ -338,14 +327,16 @@ class ChatViewModel @Inject constructor(
                 messageRepository.addMessage(
                     conversationId = effectiveConversationId,
                     role = "assistant",
-                    content = assistantContent
+                    content = assistantContent,
+                    activity = _uiState.value.activity
                 )
 
                 val updatedMessages = messageRepository.getMessagesSync(effectiveConversationId)
                 _uiState.value = _uiState.value.copy(
                     messages = updatedMessages,
                     isLoading = false,
-                    streamingResponse = null
+                    streamingResponse = null,
+                    activity = emptyList()
                 )
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error sending message", e)
@@ -533,13 +524,6 @@ class ChatViewModel @Inject constructor(
                 }
 
                 recordToolRuns(domainToolCalls)
-
-                messageRepository.addMessageWithToolCalls(
-                    conversationId = conversationId,
-                    role = "assistant",
-                    content = "",
-                    toolCalls = gson.toJson(domainToolCalls)
-                )
 
                 val toolResults = withContext(Dispatchers.IO) {
                     domainToolCalls.map { toolCall ->

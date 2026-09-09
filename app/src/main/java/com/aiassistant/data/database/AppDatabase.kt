@@ -23,7 +23,7 @@ private val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
         ScheduledTaskEntity::class,
         TaskExecutionHistoryEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
