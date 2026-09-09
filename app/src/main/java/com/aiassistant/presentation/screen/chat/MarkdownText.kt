@@ -31,10 +31,15 @@ fun MarkdownText(
     fontSize: TextUnit = MaterialTheme.typography.bodyMedium.fontSize,
     fontWeight: FontWeight = MaterialTheme.typography.bodyMedium.fontWeight ?: FontWeight.Normal,
 ) {
-    val parser = Parser.Builder()
-        .extensions(listOf(TablesExtension.create()))
-        .build()
-    val document = parser.parse(markdown)
+    // Both remembered: this renders a streaming reply now, so it recomposes on every delta
+    // and re-parsing the whole document each time is the difference between smooth text and a
+    // stutter. The parse only depends on the string.
+    val parser = remember {
+        Parser.Builder()
+            .extensions(listOf(TablesExtension.create()))
+            .build()
+    }
+    val document = remember(markdown) { parser.parse(markdown) }
 
     val paragraphs = mutableListOf<AnnotatedParagraph>()
 

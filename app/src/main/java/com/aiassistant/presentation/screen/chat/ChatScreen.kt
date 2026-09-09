@@ -401,15 +401,17 @@ fun ChatScreen(
 
             val listState = rememberLazyListState()
 
-            // Whether the user is already at the tail. Following the stream unconditionally
-            // would yank the list away from them while they read something earlier, which is
-            // worse than not following at all.
+            // Whether the tail is actually on screen. Checking the index alone was wrong: a
+            // long reply is a single very tall item, so it stays the "last visible item" while
+            // the user reads the middle of it -- and every delta then scrolled them back, which
+            // is why dragging up snapped straight back down.
             val pinnedToTail by remember(listState) {
                 derivedStateOf {
                     val info = listState.layoutInfo
                     val last = info.visibleItemsInfo.lastOrNull()
                         ?: return@derivedStateOf true
-                    last.index >= info.totalItemsCount - 2
+                    last.index == info.totalItemsCount - 1 &&
+                        last.offset + last.size - info.viewportEndOffset <= AUTOSCROLL_SLACK_PX
                 }
             }
 
@@ -420,9 +422,12 @@ fun ChatScreen(
             ) {
                 if (!pinnedToTail) return@LaunchedEffect
                 val target = listState.layoutInfo.totalItemsCount - 1
-                // Not animated: deltas land about fifteen times a second and an animation per
-                // delta never finishes, so the list crawls instead of keeping up.
-                if (target >= 0) listState.scrollToItem(target)
+                // Not animated: deltas land many times a second and an animation per delta never
+                // finishes, so the list crawls instead of keeping up. The offset is deliberately
+                // larger than any item, which clamps to the very end -- scrolling to the item
+                // alone parks its *top* at the top of the screen and leaves a long reply growing
+                // out of sight below.
+                if (target >= 0) listState.scrollToItem(target, SCROLL_TO_END_OFFSET)
             }
 
             LazyColumn(
@@ -437,32 +442,42 @@ fun ChatScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(groupedMessages, key = { 
-                    if (it.isAssistantToolCalls) "tools-${it.toolCalls.map { tc -> tc.id }.joinToString()}" 
-                    else it.message!!.id 
-                }) { group ->
-                    if (group.isAssistantToolCalls) {
-                        ToolCallIndicator(group.toolCalls)
-                    } else {
-                        group.message?.let { MessageBubble(it) }
+                // Reasoning belongs immediately above the reply it produced, and has to stay
+                // there when the turn ends. While the reply is still streaming that means after
+                // every persisted message; once it is persisted the reply becomes the last
+                // message, so the row has to move above it -- otherwise it visibly jumps from
+                // above the answer to below it the moment the turn completes.
+                val reasoning = uiState.reasoning?.takeIf { it.isNotBlank() }
+                val awaitingFirstText =
+                    uiState.isLoading && uiState.streamingResponse.isNullOrBlank()
+                val showReasoning = reasoning != null || awaitingFirstText
+                val holdBackReply = showReasoning &&
+                    uiState.streamingResponse == null &&
+                    groupedMessages.lastOrNull()?.message?.role == MessageRole.ASSISTANT
+                val leading = if (holdBackReply) groupedMessages.dropLast(1) else groupedMessages
+
+                items(leading, key = ::messageGroupKey) { group ->
+                    MessageGroupRow(group)
+                }
+
+                if (showReasoning) {
+                    item(key = "reasoning") {
+                        ReasoningLine(text = reasoning.orEmpty())
                     }
                 }
 
-                // Reasoning comes before the answer it produced, and while a turn is in
-                // flight this row is the only thing moving on a tool-heavy round -- so it
-                // carries the tail of the reasoning rather than just the word "Thinking".
-                val thinking = uiState.reasoning?.takeIf { it.isNotBlank() }
-                if (thinking != null || (uiState.isLoading && uiState.streamingResponse.isNullOrBlank())) {
-                    item(key = "reasoning") {
-                        ReasoningLine(text = thinking.orEmpty())
+                if (holdBackReply) {
+                    val reply = groupedMessages.last()
+                    item(key = messageGroupKey(reply)) {
+                        MessageGroupRow(reply)
                     }
                 }
 
                 uiState.streamingResponse?.takeIf { it.isNotBlank() }?.let { partial ->
                     item(key = "streaming") {
-                        // Rendered exactly like a finished assistant turn, so the hand-off to
-                        // the persisted message is invisible.
-                        AssistantTurn(content = partial, markdown = false)
+                        // Same renderer as a finished turn, so the hand-off to the persisted
+                        // message changes nothing on screen.
+                        AssistantTurn(content = partial)
                     }
                 }
 
@@ -729,24 +744,41 @@ fun MessageBubble(message: ChatMessage) {
     if (message.role == MessageRole.USER) UserTurn(message) else AssistantTurn(message.content)
 }
 
+/**
+ * A reply, streaming or finished.
+ *
+ * Markdown either way. Rendering the stream as plain text and the finished message as markdown
+ * meant every reply reflowed the instant it landed -- different type sizes, different spacing --
+ * which loses your place if you were already reading it. An unterminated code fence simply
+ * renders as a code block until it closes, which is what the content is.
+ */
 @Composable
-private fun AssistantTurn(content: String, markdown: Boolean = true) {
+private fun AssistantTurn(content: String) {
     if (content.isBlank()) return
-    Box(modifier = Modifier.fillMaxWidth()) {
-        if (markdown) {
-            MarkdownText(markdown = content, modifier = Modifier.fillMaxWidth())
-        } else {
-            // A partial document has unbalanced fences and half-written tables, and re-parsing
-            // all of it every delta is wasted work at 12 tok/s. The finished turn renders as
-            // markdown a moment later.
-            Text(
-                text = content,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
+    MarkdownText(markdown = content, modifier = Modifier.fillMaxWidth())
+}
+
+private fun messageGroupKey(group: MessageGroup): Any =
+    if (group.isAssistantToolCalls) {
+        "tools-" + group.toolCalls.joinToString { it.id }
+    } else {
+        group.message!!.id
+    }
+
+@Composable
+private fun MessageGroupRow(group: MessageGroup) {
+    if (group.isAssistantToolCalls) {
+        ToolCallIndicator(group.toolCalls)
+    } else {
+        group.message?.let { MessageBubble(it) }
     }
 }
+
+/** Slack when deciding "at the bottom", so a pixel of rounding does not stop the follow. */
+private const val AUTOSCROLL_SLACK_PX = 64
+
+/** Larger than any single item, so scrolling clamps to the very end of the list. */
+private const val SCROLL_TO_END_OFFSET = 1_000_000
 
 /** Collapsed reasoning. Shows the live tail so a long turn visibly has a pulse. */
 @Composable
