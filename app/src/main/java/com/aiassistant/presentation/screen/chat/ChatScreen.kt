@@ -49,6 +49,7 @@ import com.aiassistant.domain.model.MessageRole
 import com.aiassistant.domain.model.ToolCall
 import com.aiassistant.presentation.vm.ChatViewModel
 import com.aiassistant.presentation.vm.ChatUiState
+import com.aiassistant.presentation.vm.TurnActivity
 import com.google.gson.JsonParser
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberPermissionState
@@ -418,7 +419,7 @@ fun ChatScreen(
             LaunchedEffect(
                 uiState.messages.size,
                 uiState.streamingResponse,
-                uiState.reasoning
+                uiState.activity
             ) {
                 if (!pinnedToTail) return@LaunchedEffect
                 val target = listState.layoutInfo.totalItemsCount - 1
@@ -442,32 +443,41 @@ fun ChatScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Reasoning belongs immediately above the reply it produced, and has to stay
-                // there when the turn ends. While the reply is still streaming that means after
-                // every persisted message; once it is persisted the reply becomes the last
-                // message, so the row has to move above it -- otherwise it visibly jumps from
-                // above the answer to below it the moment the turn completes.
-                val reasoning = uiState.reasoning?.takeIf { it.isNotBlank() }
+                // One activity row per turn, in a position that does not move: after your
+                // message, above the reply. The tool chips for this turn are dropped from the
+                // transcript because the row already carries them -- injecting them separately
+                // is what shifted everything under the reader mid-read.
                 val awaitingFirstText =
                     uiState.isLoading && uiState.streamingResponse.isNullOrBlank()
-                val showReasoning = reasoning != null || awaitingFirstText
-                val holdBackReply = showReasoning &&
+                val showActivity = uiState.activity.isNotEmpty() || awaitingFirstText
+                val lastUser = groupedMessages.indexOfLast { it.message?.role == MessageRole.USER }
+                val transcript = if (uiState.activity.isEmpty()) {
+                    groupedMessages
+                } else {
+                    groupedMessages.filterIndexed { index, group ->
+                        !(index > lastUser && group.isAssistantToolCalls)
+                    }
+                }
+                val holdBackReply = showActivity &&
                     uiState.streamingResponse == null &&
-                    groupedMessages.lastOrNull()?.message?.role == MessageRole.ASSISTANT
-                val leading = if (holdBackReply) groupedMessages.dropLast(1) else groupedMessages
+                    transcript.lastOrNull()?.message?.role == MessageRole.ASSISTANT
+                val leading = if (holdBackReply) transcript.dropLast(1) else transcript
 
                 items(leading, key = ::messageGroupKey) { group ->
                     MessageGroupRow(group)
                 }
 
-                if (showReasoning) {
-                    item(key = "reasoning") {
-                        ReasoningLine(text = reasoning.orEmpty())
+                if (showActivity) {
+                    item(key = "activity") {
+                        ActivityRow(
+                            activity = uiState.activity,
+                            running = uiState.isLoading
+                        )
                     }
                 }
 
                 if (holdBackReply) {
-                    val reply = groupedMessages.last()
+                    val reply = transcript.last()
                     item(key = messageGroupKey(reply)) {
                         MessageGroupRow(reply)
                     }
@@ -780,16 +790,18 @@ private const val AUTOSCROLL_SLACK_PX = 64
 /** Larger than any single item, so scrolling clamps to the very end of the list. */
 private const val SCROLL_TO_END_OFFSET = 1_000_000
 
-/** Collapsed reasoning. Shows the live tail so a long turn visibly has a pulse. */
+/**
+ * Everything the model did this turn, in one row that never moves.
+ *
+ * Collapsed it shows only the latest step -- the tail of the current thought, or the tool being
+ * run -- so a long turn always has a pulse without costing height. Expanded it replays the whole
+ * turn in order, thoughts as text and tool calls as pills between them, which is the only place
+ * the chronology is visible: the transcript shows the answer, not how it was reached.
+ */
 @Composable
-private fun ReasoningLine(text: String) {
+private fun ActivityRow(activity: List<TurnActivity>, running: Boolean) {
     var expanded by remember { mutableStateOf(false) }
-    val canExpand = text.isNotBlank()
-    // The tail, not the first line: reasoning arrives as one long run of deltas, and clipping
-    // the front would leave a caption that never changes while the model works.
-    val tail = remember(text) {
-        text.trim().replace(Regex("\\s+"), " ").takeLast(REASONING_TAIL_CHARS)
-    }
+    val canExpand = activity.isNotEmpty()
 
     Column(
         modifier = Modifier
@@ -799,31 +811,121 @@ private fun ReasoningLine(text: String) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = if (expanded) "Hide reasoning" else "Show reasoning",
+                contentDescription = if (expanded) "Hide detail" else "Show detail",
                 modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.width(4.dp))
+            ActivitySummary(activity = activity, running = running, expanded = expanded)
+        }
+
+        if (expanded) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Column(
+                modifier = Modifier.padding(start = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                activity.forEach { step ->
+                    when (step) {
+                        is TurnActivity.Thought -> Text(
+                            text = step.text.trim(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        is TurnActivity.ToolRun -> ToolPill(step)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The collapsed caption: the newest step, whatever kind it is. */
+@Composable
+private fun ActivitySummary(
+    activity: List<TurnActivity>,
+    running: Boolean,
+    expanded: Boolean
+) {
+    val latest = activity.lastOrNull()
+    if (expanded || latest == null) {
+        Text(
+            text = if (running) "Thinking\u2026" else "Detail",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
+        return
+    }
+
+    when (latest) {
+        is TurnActivity.ToolRun -> {
+            Icon(
+                imageVector = getToolIcon(latest.name),
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = if (expanded || !canExpand) "Thinking\u2026" else tail,
+                text = latest.name,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                overflow = TextOverflow.Ellipsis
             )
         }
-        if (expanded) {
-            Spacer(modifier = Modifier.height(6.dp))
+        is TurnActivity.Thought -> {
+            // The tail, not the head: reasoning arrives as one long run of deltas, and clipping
+            // the front leaves a caption that never changes while the model works.
+            val tail = remember(latest.text) {
+                latest.text.trim().replace(Regex("\\s+"), " ").takeLast(REASONING_TAIL_CHARS)
+            }
             Text(
-                text = text,
-                style = MaterialTheme.typography.bodySmall,
+                text = "Thinking: $tail",
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 20.dp)
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
 }
+
+@Composable
+private fun ToolPill(tool: TurnActivity.ToolRun) {
+    val summary = remember(tool.arguments) {
+        parseToolArguments(tool.arguments)
+            ?.joinToString(", ") { (key, value) -> "$key: $value" }
+            ?.take(TOOL_PILL_MAX_CHARS)
+    }
+    Surface(
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = getToolIcon(tool.name),
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = if (summary.isNullOrBlank()) tool.name else "${tool.name} \u00b7 $summary",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private const val TOOL_PILL_MAX_CHARS = 60
 
 /** Throughput and other after-the-fact notes, in the same visual key as [ReasoningLine]. */
 @Composable

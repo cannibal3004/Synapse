@@ -43,6 +43,18 @@ import java.time.ZonedDateTime
 import javax.inject.Inject
 import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 
+/**
+ * One step of a turn, in the order it happened.
+ *
+ * Reasoning and tool calls used to be two separate pieces of UI that appeared and disappeared at
+ * different moments, which shifted the transcript under the reader. They are one sequence now, so
+ * one row can show all of it.
+ */
+sealed interface TurnActivity {
+    data class Thought(val text: String) : TurnActivity
+    data class ToolRun(val name: String, val arguments: String) : TurnActivity
+}
+
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val isLoading: Boolean = false,
@@ -56,8 +68,8 @@ data class ChatUiState(
     val onDeviceDownloading: Boolean = false,
     val onDeviceDownloadProgress: Float = 0f,
     val onDeviceEngineReady: Boolean = false,
-    /** Reasoning for the turn in flight, from either path. Shown collapsed under the reply. */
-    val reasoning: String? = null,
+    /** What the model did this turn, in order. Reasoning and tool calls interleaved. */
+    val activity: List<TurnActivity> = emptyList(),
     val onDeviceStats: String? = null,
     /** The reply as far as it has arrived, shown until the finished message is persisted. */
     val streamingResponse: String? = null,
@@ -412,7 +424,7 @@ class ChatViewModel @Inject constructor(
 
         onDeviceLlmRepository.resetConversation()
         _uiState.value = _uiState.value.copy(
-            reasoning = null,
+            activity = emptyList(),
             onDeviceStats = null,
             streamingResponse = null
         )
@@ -431,11 +443,7 @@ class ChatViewModel @Inject constructor(
                         fullResponse += event.text
                         _uiState.value = _uiState.value.copy(streamingResponse = fullResponse)
                     }
-                    is OnDeviceLlmEngine.ChatEvent.Thinking -> {
-                        thinkingText.append(event.text)
-                        _uiState.value =
-                            _uiState.value.copy(reasoning = thinkingText.toString())
-                    }
+                    is OnDeviceLlmEngine.ChatEvent.Thinking -> recordThought(event.text)
                     is OnDeviceLlmEngine.ChatEvent.Done -> {
                         fullResponse = event.response
                         _uiState.value =
@@ -486,10 +494,7 @@ class ChatViewModel @Inject constructor(
         // has already been shown, so the persisted message has to include it or the reply
         // changes when it lands.
         val streamed = StringBuilder()
-        // Accumulated across rounds like the answer is: a tool round's reasoning explains the
-        // call that follows it, so dropping it at the round boundary loses the useful half.
-        val reasoning = StringBuilder()
-        _uiState.value = _uiState.value.copy(streamingResponse = null, reasoning = null)
+        _uiState.value = _uiState.value.copy(streamingResponse = null, activity = emptyList())
 
         do {
             var roundToolCalls: List<com.aiassistant.data.model.api.ToolCall> = emptyList()
@@ -508,10 +513,7 @@ class ChatViewModel @Inject constructor(
                         _uiState.value =
                             _uiState.value.copy(streamingResponse = streamed.toString())
                     }
-                    is StreamEvent.Reasoning -> {
-                        reasoning.append(event.text)
-                        _uiState.value = _uiState.value.copy(reasoning = reasoning.toString())
-                    }
+                    is StreamEvent.Reasoning -> recordThought(event.text)
                     is StreamEvent.Complete -> {
                         roundToolCalls = event.toolCalls
                         roundContent = event.content
@@ -529,6 +531,8 @@ class ChatViewModel @Inject constructor(
                         arguments = it.function.arguments
                     )
                 }
+
+                recordToolRuns(domainToolCalls)
 
                 messageRepository.addMessageWithToolCalls(
                     conversationId = conversationId,
@@ -584,6 +588,25 @@ class ChatViewModel @Inject constructor(
      * rather than falling back when embeddings are unavailable. The model can still search
      * deliberately with the recall_facts tool.
      */
+    /** Appends reasoning, merging into the previous thought so a run of deltas is one entry. */
+    private fun recordThought(text: String) {
+        val current = _uiState.value.activity
+        val last = current.lastOrNull()
+        val updated = if (last is TurnActivity.Thought) {
+            current.dropLast(1) + TurnActivity.Thought(last.text + text)
+        } else {
+            current + TurnActivity.Thought(text)
+        }
+        _uiState.value = _uiState.value.copy(activity = updated)
+    }
+
+    private fun recordToolRuns(calls: List<com.aiassistant.domain.model.ToolCall>) {
+        _uiState.value = _uiState.value.copy(
+            activity = _uiState.value.activity +
+                calls.map { TurnActivity.ToolRun(it.name, it.arguments) }
+        )
+    }
+
     private suspend fun memoryContextFor(query: String): String? {
         val memories = runCatching {
             memorySearchUseCase.getRelevantMemories(
