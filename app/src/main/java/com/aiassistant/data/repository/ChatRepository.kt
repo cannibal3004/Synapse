@@ -140,6 +140,13 @@ class ChatRepository(
                     emit(StreamEvent.Delta(text))
                 }
 
+                // Deliberately not appended to `content`: reasoning is not part of the answer,
+                // and a tool round is often nothing but reasoning -- 25 frames of it and zero
+                // content, measured against llama.cpp.
+                choice.delta?.reasoning_content?.takeIf { it.isNotEmpty() }?.let { text ->
+                    emit(StreamEvent.Reasoning(text))
+                }
+
                 choice.delta?.tool_calls?.forEach { delta ->
                     val partial = partialCalls.getOrPut(delta.index) { PartialToolCall() }
                     delta.id?.let { partial.id = it }

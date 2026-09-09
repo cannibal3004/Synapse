@@ -20,6 +20,9 @@ sealed interface StreamEvent {
     /** Text as it arrives. Deltas are fragments, not whole lines. */
     data class Delta(val text: String) : StreamEvent
 
+    /** Reasoning as it arrives, for models that report it separately from the answer. */
+    data class Reasoning(val text: String) : StreamEvent
+
     /** End of the round, with everything reassembled. */
     data class Complete(
         val content: String,
@@ -37,7 +40,12 @@ data class StreamingChoice(
 data class Delta(
     val role: String?,
     val content: String?,
-    val tool_calls: List<ToolCallDelta>?
+    val tool_calls: List<ToolCallDelta>?,
+    /**
+     * Reasoning, kept out of `content` by the server rather than wrapped in `<think>` tags.
+     * llama.cpp and several hosted providers do this; those that do not simply never set it.
+     */
+    val reasoning_content: String? = null
 )
 
 data class ToolCallDelta(

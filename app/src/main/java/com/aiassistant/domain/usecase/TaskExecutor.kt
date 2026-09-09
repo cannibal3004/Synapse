@@ -135,6 +135,16 @@ class TaskExecutor @Inject constructor(
                             )
                         }
 
+                        // See ChatViewModel: the assistant turn carrying tool_calls has to
+                        // precede the tool messages that answer it.
+                        messages.add(
+                            ApiChatMessage(
+                                role = "assistant",
+                                content = assistantMessage?.content?.ifBlank { null },
+                                tool_calls = toolCalls
+                            )
+                        )
+
                         toolResults.forEach { result ->
                             messages.add(
                                 ApiChatMessage(

@@ -415,7 +415,7 @@ fun ChatScreen(
             LaunchedEffect(
                 uiState.messages.size,
                 uiState.streamingResponse,
-                uiState.onDeviceThinking
+                uiState.reasoning
             ) {
                 if (!pinnedToTail) return@LaunchedEffect
                 val target = listState.layoutInfo.totalItemsCount - 1
@@ -450,7 +450,7 @@ fun ChatScreen(
                 // Reasoning comes before the answer it produced, and while a turn is in
                 // flight this row is the only thing moving on a tool-heavy round -- so it
                 // carries the tail of the reasoning rather than just the word "Thinking".
-                val thinking = uiState.onDeviceThinking?.takeIf { it.isNotBlank() }
+                val thinking = uiState.reasoning?.takeIf { it.isNotBlank() }
                 if (thinking != null || (uiState.isLoading && uiState.streamingResponse.isNullOrBlank())) {
                     item(key = "reasoning") {
                         ReasoningLine(text = thinking.orEmpty())

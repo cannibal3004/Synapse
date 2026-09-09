@@ -56,7 +56,8 @@ data class ChatUiState(
     val onDeviceDownloading: Boolean = false,
     val onDeviceDownloadProgress: Float = 0f,
     val onDeviceEngineReady: Boolean = false,
-    val onDeviceThinking: String? = null,
+    /** Reasoning for the turn in flight, from either path. Shown collapsed under the reply. */
+    val reasoning: String? = null,
     val onDeviceStats: String? = null,
     /** The reply as far as it has arrived, shown until the finished message is persisted. */
     val streamingResponse: String? = null,
@@ -411,7 +412,7 @@ class ChatViewModel @Inject constructor(
 
         onDeviceLlmRepository.resetConversation()
         _uiState.value = _uiState.value.copy(
-            onDeviceThinking = null,
+            reasoning = null,
             onDeviceStats = null,
             streamingResponse = null
         )
@@ -433,7 +434,7 @@ class ChatViewModel @Inject constructor(
                     is OnDeviceLlmEngine.ChatEvent.Thinking -> {
                         thinkingText.append(event.text)
                         _uiState.value =
-                            _uiState.value.copy(onDeviceThinking = thinkingText.toString())
+                            _uiState.value.copy(reasoning = thinkingText.toString())
                     }
                     is OnDeviceLlmEngine.ChatEvent.Done -> {
                         fullResponse = event.response
@@ -485,10 +486,14 @@ class ChatViewModel @Inject constructor(
         // has already been shown, so the persisted message has to include it or the reply
         // changes when it lands.
         val streamed = StringBuilder()
-        _uiState.value = _uiState.value.copy(streamingResponse = null)
+        // Accumulated across rounds like the answer is: a tool round's reasoning explains the
+        // call that follows it, so dropping it at the round boundary loses the useful half.
+        val reasoning = StringBuilder()
+        _uiState.value = _uiState.value.copy(streamingResponse = null, reasoning = null)
 
         do {
             var roundToolCalls: List<com.aiassistant.data.model.api.ToolCall> = emptyList()
+            var roundContent = ""
 
             chatApiRepository.streamChatCompletion(
                 apiKey = _apiKey.value ?: "",
@@ -503,7 +508,14 @@ class ChatViewModel @Inject constructor(
                         _uiState.value =
                             _uiState.value.copy(streamingResponse = streamed.toString())
                     }
-                    is StreamEvent.Complete -> roundToolCalls = event.toolCalls
+                    is StreamEvent.Reasoning -> {
+                        reasoning.append(event.text)
+                        _uiState.value = _uiState.value.copy(reasoning = reasoning.toString())
+                    }
+                    is StreamEvent.Complete -> {
+                        roundToolCalls = event.toolCalls
+                        roundContent = event.content
+                    }
                 }
             }
 
@@ -535,6 +547,18 @@ class ChatViewModel @Inject constructor(
                         )
                     }
                 }
+
+                // The assistant turn that asked for the calls has to precede their results.
+                // The protocol pairs every tool message with the tool_calls that produced it, and
+                // a strict endpoint rejects a tool message that answers nothing -- which reads as
+                // a model failure rather than a malformed request.
+                history.add(
+                    ApiChatMessage(
+                        role = "assistant",
+                        content = roundContent.ifBlank { null },
+                        tool_calls = toolCalls
+                    )
+                )
 
                 toolResults.forEach { result ->
                     history.add(
