@@ -125,7 +125,12 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             onDeviceLlmSettingsManager.settings.collect { settings ->
                 _isOnDeviceMode.value = settings.enabled
-                _uiState.value = _uiState.value.copy(onDeviceModelName = settings.modelName)
+                // isOnDeviceMode has been on ChatUiState since it was written and was never
+                // assigned, so anything reading it saw false regardless of the setting.
+                _uiState.value = _uiState.value.copy(
+                    isOnDeviceMode = settings.enabled,
+                    onDeviceModelName = settings.modelName
+                )
                 Log.d("ChatViewModel", "On-device settings loaded: enabled=${settings.enabled}")
             }
         }
