@@ -483,8 +483,8 @@ class OnDeviceLlmEngine(
             channels = if (thinkingEnabled) thinkingChannels(config.modelPath) else emptyList(),
             // Always bounded. Left unset, generation runs until EOS or the KV limit
             // (MAX_NUM_TOKENS), which on CPU is tens of minutes for a model that does not stop
-            // promptly. The user's setting overrides this.
-            maxOutputToken = config.maxOutputTokens ?: DEFAULT_MAX_OUTPUT_TOKENS,
+            // promptly. The user's setting overrides this, up to what the KV can hold.
+            maxOutputToken = outputTokenLimit(config),
             thinkingConfig = if (thinkingEnabled) {
                 ThinkingConfig(
                     enableThinking = true,
@@ -691,6 +691,27 @@ class OnDeviceLlmEngine(
             }
         }.onFailure { Log.w(TAG, "Ignoring malformed thinkingChannels", it) }
             .getOrDefault(DEFAULT_THINKING_CHANNELS)
+    }
+
+    /**
+     * Output allowance, capped against the KV the answer has to share with the prompt.
+     *
+     * `maxOutputToken` is fixed when the conversation is created, so it cannot adapt per turn.
+     * What it must not do is exceed the whole context: a bare 4096 default against a 4096-token
+     * bundle lets one answer fill the KV with the prompt still in it. Overrunning is not a clean
+     * failure on every bundle -- Spark's int4 export was observed generating 2638 tokens onto a
+     * ~1500-token prompt, after which the next turn on the same engine decoded nothing but
+     * invalid logits.
+     */
+    private fun outputTokenLimit(config: ActiveConfig): Int {
+        val requested = config.maxOutputTokens ?: DEFAULT_MAX_OUTPUT_TOKENS
+        val ceiling = (config.contextTokens * MAX_OUTPUT_FRACTION).toInt()
+            .coerceAtLeast(MIN_OUTPUT_TOKENS)
+        val limit = minOf(requested, ceiling)
+        if (limit < requested) {
+            Log.d(TAG, "Output limit $requested -> $limit (context ${config.contextTokens})")
+        }
+        return limit
     }
 
     private fun sidecarFlag(modelPath: String, key: String): Boolean =
@@ -947,6 +968,12 @@ class OnDeviceLlmEngine(
         private const val DEFAULT_TOP_K = 10
         private const val DEFAULT_THINKING_BUDGET = 2048
         private const val DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
+        /** Share of the context one answer may claim, leaving the rest for the prompt. */
+        private const val MAX_OUTPUT_FRACTION = 0.5
+
+        /** Floor, so a very small context still allows a usable answer. */
+        private const val MIN_OUTPUT_TOKENS = 256
 
         private val TOOL_CALL_BLOCK = Regex(
             """<tool_call>(.*?)</tool_call>""",
