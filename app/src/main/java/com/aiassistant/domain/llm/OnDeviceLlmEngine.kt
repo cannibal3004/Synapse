@@ -253,8 +253,8 @@ class OnDeviceLlmEngine(
 
             val engineConfig = EngineConfig(
                 modelPath = modelPath,
-                backend = litertBackend(config.backend),
-                visionBackend = if (useVision) litertBackend(config.backend) else null,
+                backend = litertBackend(config.backend, modelPath),
+                visionBackend = if (useVision) litertBackend(config.backend, modelPath) else null,
                 // Audio stays on CPU even when the main backend is accelerated, per the docs'
                 // multi-modal compliance note.
                 audioBackend = if (useAudio) Backend.CPU() else null,
@@ -750,8 +750,20 @@ class OnDeviceLlmEngine(
         return (override ?: requested ?: DEFAULT_CONTEXT_TOKENS).coerceAtLeast(1024)
     }
 
-    private fun litertBackend(backend: LlmBackend): Backend = when (backend) {
-        LlmBackend.CPU -> Backend.CPU()
+    /**
+     * CPU worker threads, from the sidecar's `cpuThreads`.
+     *
+     * `Backend.CPU()` leaves this null and lets the runtime decide, which is not obviously the
+     * right call on a big.LITTLE phone -- scheduling inference onto efficiency cores costs more
+     * than the extra parallelism buys. Exposed so it can be measured per device rather than
+     * guessed, since CPU is the only working backend for int4 bundles on this runtime.
+     */
+    private fun cpuThreads(modelPath: String): Int? =
+        sidecarConfig(modelPath)?.get("cpuThreads")?.asInt?.takeIf { it > 0 }
+            ?.also { Log.d(TAG, "CPU thread count from sidecar: $it") }
+
+    private fun litertBackend(backend: LlmBackend, modelPath: String): Backend = when (backend) {
+        LlmBackend.CPU -> Backend.CPU(threadCount = cpuThreads(modelPath))
         LlmBackend.GPU -> Backend.GPU()
         LlmBackend.NPU -> Backend.NPU(context.applicationInfo.nativeLibraryDir)
         LlmBackend.GOOGLE_TENSOR -> Backend.GOOGLE_TENSOR()
