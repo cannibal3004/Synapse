@@ -997,8 +997,15 @@ class OnDeviceLlmEngine(
         private const val DEFAULT_THINKING_BUDGET = 2048
         private const val DEFAULT_MAX_OUTPUT_TOKENS = 4096
 
-        /** Share of the context one answer may claim, leaving the rest for the prompt. */
-        private const val MAX_OUTPUT_FRACTION = 0.5
+        /**
+         * Share of the context one answer may claim, leaving the rest for the prompt.
+         *
+         * Deliberately a quarter rather than a half: this allowance is also what gets reserved
+         * when sizing tool results, and in a tool loop the input side is worth far more than a
+         * long answer. Reserving half of a 4096 context starved the second round down to 252
+         * characters and the third to nothing, on an answer that came to 71 tokens.
+         */
+        private const val MAX_OUTPUT_FRACTION = 0.25
 
         /** Floor, so a very small context still allows a usable answer. */
         private const val MIN_OUTPUT_TOKENS = 256
