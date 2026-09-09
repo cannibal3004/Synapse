@@ -375,6 +375,7 @@ class OnDeviceLlmEngine(
                                     .forEach { part -> roundText.append(part.text) }
                                 streamable(roundText, sent)?.let { delta ->
                                     sent += delta.length
+                                    Log.d(TAG, "Chunk: ${delta.length} chars (sent=$sent)")
                                     send(ChatEvent.Chunk(delta))
                                 }
                                 // Channel content is out-of-band by definition, and the
