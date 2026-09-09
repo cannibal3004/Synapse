@@ -416,6 +416,16 @@ fun ChatScreen(
                 }
             }
 
+            // Sending is a deliberate act, so it always takes you to the new message even if
+            // you were reading further up -- unlike following a stream, which defers to wherever
+            // you have scrolled. Animated, because it is a jump you asked for.
+            val lastSentId = uiState.messages.lastOrNull { it.role == MessageRole.USER }?.id
+            LaunchedEffect(lastSentId) {
+                if (lastSentId == null) return@LaunchedEffect
+                val target = listState.layoutInfo.totalItemsCount - 1
+                if (target >= 0) listState.animateScrollToItem(target, SCROLL_TO_END_OFFSET)
+            }
+
             LaunchedEffect(
                 uiState.messages.size,
                 uiState.streamingResponse,
@@ -832,6 +842,13 @@ private fun ActivitySummary(
 ) {
     val latest = activity.lastOrNull()
     if (expanded || latest == null) {
+        Icon(
+            imageVector = Icons.Default.Psychology,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.width(4.dp))
         Text(
             text = if (running) "Thinking\u2026" else "Detail",
             style = MaterialTheme.typography.labelMedium,
@@ -864,8 +881,15 @@ private fun ActivitySummary(
             val tail = remember(latest.text) {
                 latest.text.trim().replace(Regex("\\s+"), " ").takeLast(REASONING_TAIL_CHARS)
             }
+            Icon(
+                imageVector = Icons.Default.Psychology,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "Thinking: $tail",
+                text = tail,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
