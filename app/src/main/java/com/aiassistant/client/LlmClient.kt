@@ -155,7 +155,14 @@ class LlmClient @Inject constructor(
             modelPath, systemPrompt, temperature, topK, topP,
             useTools, enableThinking, thinkingTokenBudget, maxOutputTokens, backend, contextTokens
         )
-        return sendAndAwait(MSG_INITIALIZE, data, INIT_TIMEOUT_MS) { msg ->
+        return sendAndAwait(
+            MSG_INITIALIZE,
+            data,
+            INIT_TIMEOUT_MS,
+            // Loading a large bundle is exactly when the process is most likely to be OOM-killed,
+            // and reporting that as a timeout sends anyone reading it after the wrong problem.
+            onDied = { Result.failure(IllegalStateException(SERVICE_DIED_MESSAGE)) }
+        ) { msg ->
             when (msg.what) {
                 CB_INIT_DONE -> Result.success(Unit)
                 CB_ERROR -> Result.failure(Exception(msg.errorText()))
@@ -302,6 +309,7 @@ class LlmClient @Inject constructor(
         what: Int,
         data: Bundle,
         timeoutMs: Long,
+        onDied: () -> T? = { null },
         onReply: (Message) -> T?
     ): T? = withTimeoutOrNull(timeoutMs) {
         val messenger = awaitService() ?: return@withTimeoutOrNull null
@@ -313,7 +321,7 @@ class LlmClient @Inject constructor(
             }
             val onDeath = {
                 Log.w(TAG, "Service died while awaiting reply to $what")
-                continuation.resumeIfActive(null)
+                continuation.resumeIfActive(onDied())
             }
             addDeathHandler(onDeath)
             continuation.invokeOnCancellation {
