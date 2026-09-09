@@ -30,7 +30,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -75,6 +74,48 @@ class OnDeviceLlmEngine(
             val response: String,
             val stats: GenerationStats? = null
         ) : ChatEvent
+    }
+
+    /** Thrown inside the collection block to stop a degenerate round; never escapes it. */
+    private class DegenerateOutput : Exception()
+
+    /**
+     * Detects an answer that has collapsed into repeating a single string.
+     *
+     * Aimed at the int4/GPU decode failure: every sampled token is invalid, the runtime casts it
+     * to token 0 -- `<|start of sentence|>` in Spark's tokenizer -- and the deltas then arrive
+     * identical, at a perfectly normal rate, for the entire output allowance. Rate and token
+     * count both look healthy, so repetition is the only honest signal.
+     *
+     * Two conditions must hold together, which is what keeps ordinary output safe: a long run of
+     * identical deltas *and* enough characters in that run. A table rule or a stretch of newlines
+     * clears the first easily and never comes close to the second.
+     */
+    private class RepetitionGuard {
+        private var previous: String? = null
+        private var run = 0
+
+        fun isDegenerate(message: Message): Boolean {
+            val text = message.contents.contents
+                .filterIsInstance<Content.Text>()
+                .joinToString("") { it.text }
+            if (text.isEmpty()) return false
+            if (text == previous) {
+                run++
+            } else {
+                previous = text
+                run = 1
+            }
+            return run >= MIN_RUN && run.toLong() * text.length >= MIN_CHARS
+        }
+
+        private companion object {
+            /** Identical deltas in a row before an answer is called degenerate. */
+            const val MIN_RUN = 32
+
+            /** ...and this many characters of them, so short repeats are never flagged. */
+            const val MIN_CHARS = 512
+        }
     }
 
     private data class PendingToolCall(
@@ -238,7 +279,7 @@ class OnDeviceLlmEngine(
                     "contextTokens=${config.contextTokens} capabilities=$caps"
             )
 
-            applyEngineFlags(caps)
+            applyEngineFlags(caps, modelPath)
 
             // This path is text-only: chatStream reads lastUserMessage.content and attachments
             // never reach the engine. Naming a vision or audio backend makes the runtime build
@@ -308,6 +349,7 @@ class OnDeviceLlmEngine(
 
             while (round < MAX_TOOL_ROUNDS) {
                 val roundText = StringBuilder()
+                var degenerate = false
                 val responses = try {
                     // A single round is capped on the wall clock as well as on tokens. The
                     // between-round budget cannot catch a round that never ends, and a bundle
@@ -315,10 +357,24 @@ class OnDeviceLlmEngine(
                     // allowance as invalid tokens. Nothing is emitted inside this block, so
                     // wrapping it does not break the flow's emission context.
                     withTimeoutOrNull(ROUND_TIMEOUT_MS) {
-                        when (val input = nextInput) {
-                            is Message -> conv.sendMessageAsync(input).toList()
-                            else -> conv.sendMessageAsync(input as String).toList()
+                        val collected = mutableListOf<Message>()
+                        val repetition = RepetitionGuard()
+                        try {
+                            val stream = when (val input = nextInput) {
+                                is Message -> conv.sendMessageAsync(input)
+                                else -> conv.sendMessageAsync(input as String)
+                            }
+                            stream.collect { message ->
+                                collected += message
+                                if (repetition.isDegenerate(message)) throw DegenerateOutput()
+                            }
+                        } catch (_: DegenerateOutput) {
+                            // Stop the native generation; without this it keeps running through
+                            // its whole output allowance after we have walked away.
+                            degenerate = true
+                            runCatching { conv.cancelProcess() }
                         }
+                        collected
                     } ?: run {
                         runCatching { conv.cancelProcess() }
                         Log.w(TAG, "Round $round exceeded ${ROUND_TIMEOUT_MS}ms; cancelled")
@@ -357,6 +413,18 @@ class OnDeviceLlmEngine(
                         "\n\n_Ran out of context after $round tool round(s), so I stopped here._"
                     )
                     emit(ChatEvent.Done(responseText.toString(), readStats(conv)))
+                    return@flow
+                }
+
+                if (degenerate) {
+                    Log.w(TAG, "Output collapsed into one repeating token; discarding the engine")
+                    val stats = readStats(conv)
+                    closeConversation()
+                    closeEngine()
+                    responseText.append(
+                        "\n\n_The model stopped responding. Reloading it for the next message._"
+                    )
+                    emit(ChatEvent.Done(responseText.toString(), stats))
                     return@flow
                 }
 
@@ -589,10 +657,28 @@ class OnDeviceLlmEngine(
      * before `Engine(...)`.
      */
     @OptIn(ExperimentalApi::class)
-    private fun applyEngineFlags(caps: ModelCapabilities) {
+    private fun applyEngineFlags(caps: ModelCapabilities, modelPath: String) {
         ExperimentalFlags.enableSpeculativeDecoding = caps.supportsSpeculativeDecoding
         // Cheap timing counters; without this BenchmarkInfo throws instead of reporting tok/s.
         ExperimentalFlags.enableBenchmark = true
+        applyKvCacheFlags(modelPath)
+    }
+
+    /**
+     * Keeps reasoning content out of the KV.
+     *
+     * Channel content is not part of the visible transcript and re-reading it on the next turn
+     * buys nothing, so on a 4096-token bundle with a model as verbose as Spark it is context
+     * spent for no return. The flag is nullable and unset by default, meaning "runtime decides".
+     *
+     * Set from both the engine and the conversation path because which scope reads it is not
+     * documented, and `enableBenchmark` has already demonstrated that a flag set after the
+     * Engine exists is silently ignored.
+     */
+    @OptIn(ExperimentalApi::class)
+    private fun applyKvCacheFlags(modelPath: String) {
+        ExperimentalFlags.filterChannelContentFromKvCache =
+            sidecarFlag(modelPath, "filterThinkingFromKvCache", default = true)
     }
 
     /**
@@ -608,6 +694,7 @@ class OnDeviceLlmEngine(
      */
     @OptIn(ExperimentalApi::class)
     private fun applyConversationFlags(config: ActiveConfig) {
+        applyKvCacheFlags(config.modelPath)
         val template = promptTemplate(config.modelPath)
         ExperimentalFlags.overwritePromptTemplate = template
         if (template != null) {
@@ -735,8 +822,8 @@ class OnDeviceLlmEngine(
         return limit
     }
 
-    private fun sidecarFlag(modelPath: String, key: String): Boolean =
-        sidecarConfig(modelPath)?.get(key)?.asBoolean ?: false
+    private fun sidecarFlag(modelPath: String, key: String, default: Boolean = false): Boolean =
+        sidecarConfig(modelPath)?.get(key)?.asBoolean ?: default
 
     private fun resolveBackend(modelPath: String, requested: LlmBackend): LlmBackend {
         val override = sidecarConfig(modelPath)?.get("backend")?.asString ?: return requested
