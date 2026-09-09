@@ -2,6 +2,7 @@ package com.aiassistant.domain.repository
 
 import com.aiassistant.data.model.api.ChatMessage as ApiChatMessage
 import com.aiassistant.data.model.api.ChatCompletionResponse
+import com.aiassistant.data.model.api.StreamEvent
 import com.aiassistant.domain.model.ChatMessage as DomainChatMessage
 import kotlinx.coroutines.flow.Flow
 
@@ -24,12 +25,13 @@ interface ChatApiRepository {
         tools: List<com.aiassistant.data.model.api.Tool> = emptyList()
     ): ChatCompletionResponse
 
-    suspend fun streamChatResponse(
+    fun streamChatCompletion(
         apiKey: String,
         model: String,
         baseUrl: String?,
-        messages: List<ApiChatMessage>
-    ): Sequence<String>
+        messages: List<ApiChatMessage>,
+        tools: List<com.aiassistant.data.model.api.Tool> = emptyList()
+    ): Flow<StreamEvent>
 
     sealed interface ChatEvent {
         data class Loading(val conversationId: String) : ChatEvent

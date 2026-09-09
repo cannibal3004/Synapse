@@ -11,6 +11,7 @@ import com.aiassistant.data.model.api.ChatMessage as ApiChatMessage
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.service.ActiveConversation
 import com.aiassistant.domain.tool.formatMemoryContext
+import com.aiassistant.data.model.api.StreamEvent
 import com.aiassistant.domain.usecase.MemorySearchUseCase
 import com.aiassistant.data.repository.SettingsDataRepository
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
@@ -476,22 +477,37 @@ class ChatViewModel @Inject constructor(
         history.add(userApiMessage)
 
         val tools = ToolManager.buildToolDefinitions()
-        var assistantContent = ""
         var round = 0
         val maxRounds = _maxToolRounds.value
         var toolCalls: List<com.aiassistant.data.model.api.ToolCall>? = null
 
+        // Accumulated across rounds rather than taken from the last one: whatever was streamed
+        // has already been shown, so the persisted message has to include it or the reply
+        // changes when it lands.
+        val streamed = StringBuilder()
+        _uiState.value = _uiState.value.copy(streamingResponse = null)
+
         do {
-            val response = chatApiRepository.sendChatRequest(
+            var roundToolCalls: List<com.aiassistant.data.model.api.ToolCall> = emptyList()
+
+            chatApiRepository.streamChatCompletion(
                 apiKey = _apiKey.value ?: "",
                 model = _model.value,
                 baseUrl = _baseUrl.value,
                 messages = history,
                 tools = tools
-            )
+            ).collect { event ->
+                when (event) {
+                    is StreamEvent.Delta -> {
+                        streamed.append(event.text)
+                        _uiState.value =
+                            _uiState.value.copy(streamingResponse = streamed.toString())
+                    }
+                    is StreamEvent.Complete -> roundToolCalls = event.toolCalls
+                }
+            }
 
-            val assistantMessage = response.choices.firstOrNull()?.message
-            toolCalls = assistantMessage?.tool_calls
+            toolCalls = roundToolCalls.ifEmpty { null }
 
             if (toolCalls != null && toolCalls.isNotEmpty()) {
                 val domainToolCalls = toolCalls.map {
@@ -531,12 +547,10 @@ class ChatViewModel @Inject constructor(
                 }
 
                 round++
-            } else {
-                assistantContent = assistantMessage?.content ?: ""
             }
         } while (toolCalls != null && toolCalls.isNotEmpty() && round < maxRounds)
 
-        return assistantContent
+        return streamed.toString()
     }
 
     /**
