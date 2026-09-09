@@ -348,39 +348,14 @@ fun ChatScreen(
             // conversation put the greeting in the upper half and an empty list in the lower.
             val showGreeting = uiState.messages.isEmpty() && !uiState.isLoading
             if (showGreeting) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            Icons.Default.Lightbulb,
-                            contentDescription = null,
-                            modifier = Modifier.size(64.dp),
-                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "How can I help you?",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Button(
-                            onClick = { viewModel.createNewConversation() },
-                            modifier = Modifier.height(48.dp)
-                        ) {
-                            Icon(Icons.Default.Add, "New", modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("New Conversation")
-                        }
-                    }
-                }
+                GreetingPane(
+                    modifier = Modifier.weight(1f),
+                    isOnDevice = uiState.isOnDeviceMode,
+                    onDeviceModel = uiState.onDeviceModelName,
+                    cloudModel = uiState.model,
+                    engineReady = uiState.onDeviceEngineReady,
+                    onSuggestion = { userInput = it }
+                )
             }
 
             val groupedMessages = remember(uiState.messages) {
@@ -634,6 +609,95 @@ fun ChatScreen(
         )
     }
 }
+
+/**
+ * What fills the screen before the first message.
+ *
+ * No "New Conversation" button: this *is* the new conversation, so the only thing it could do is
+ * replace an empty conversation with another one. What is actually worth knowing here is which
+ * model the next message will reach, because that changes often and is otherwise buried in
+ * Settings -- an answer that arrives in ninety seconds means something different depending on
+ * whether it came from a 1.7B on the CPU or from an API.
+ */
+@Composable
+private fun GreetingPane(
+    isOnDevice: Boolean,
+    onDeviceModel: String,
+    cloudModel: String,
+    engineReady: Boolean,
+    onSuggestion: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val target = when {
+        isOnDevice -> onDeviceModel.removeSuffix(".litertlm").ifBlank { "on-device model" }
+        cloudModel.isNotBlank() -> cloudModel
+        else -> "no model selected"
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 32.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "How can I help?",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (isOnDevice) Icons.Default.PhoneAndroid else Icons.Default.Cloud,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = target,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (isOnDevice && engineReady) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "\u00b7 loaded",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            // Tapping fills the input rather than sending, so a suggestion is a starting point
+            // to edit instead of a commitment.
+            GREETING_SUGGESTIONS.forEach { suggestion ->
+                SuggestionChip(
+                    onClick = { onSuggestion(suggestion) },
+                    label = {
+                        Text(
+                            text = suggestion,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+private val GREETING_SUGGESTIONS = listOf(
+    "Summarise a web page for me",
+    "What can you do?",
+    "Remember that I prefer metric units"
+)
 
 /**
  * A turn in the transcript.

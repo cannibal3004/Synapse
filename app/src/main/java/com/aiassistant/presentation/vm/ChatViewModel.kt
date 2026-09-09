@@ -58,7 +58,9 @@ data class ChatUiState(
     val onDeviceStats: String? = null,
     /** The reply as far as it has arrived, shown until the finished message is persisted. */
     val streamingResponse: String? = null,
-    val onDeviceCapabilities: OnDeviceLlmEngine.ModelCapabilities? = null
+    val onDeviceCapabilities: OnDeviceLlmEngine.ModelCapabilities? = null,
+    /** Bundle filename in on-device mode; the cloud model name is [model]. */
+    val onDeviceModelName: String = ""
 )
 
 private const val MEMORY_INJECTION_LIMIT = 5
@@ -123,6 +125,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             onDeviceLlmSettingsManager.settings.collect { settings ->
                 _isOnDeviceMode.value = settings.enabled
+                _uiState.value = _uiState.value.copy(onDeviceModelName = settings.modelName)
                 Log.d("ChatViewModel", "On-device settings loaded: enabled=${settings.enabled}")
             }
         }
