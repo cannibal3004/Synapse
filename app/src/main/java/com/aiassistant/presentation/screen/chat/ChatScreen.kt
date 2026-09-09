@@ -18,10 +18,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -338,8 +341,13 @@ fun ChatScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .imePadding()
         ) {
-            if (uiState.messages.isEmpty() && !uiState.isLoading) {
+            // The greeting and the list are alternatives, not siblings. Both used to claim
+            // weight(1f), which is where the dead space top and bottom came from: an empty
+            // conversation put the greeting in the upper half and an empty list in the lower.
+            val showGreeting = uiState.messages.isEmpty() && !uiState.isLoading
+            if (showGreeting) {
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -400,13 +408,43 @@ fun ChatScreen(
                 groups
             }
 
+            val listState = rememberLazyListState()
+
+            // Whether the user is already at the tail. Following the stream unconditionally
+            // would yank the list away from them while they read something earlier, which is
+            // worse than not following at all.
+            val pinnedToTail by remember(listState) {
+                derivedStateOf {
+                    val info = listState.layoutInfo
+                    val last = info.visibleItemsInfo.lastOrNull()
+                        ?: return@derivedStateOf true
+                    last.index >= info.totalItemsCount - 2
+                }
+            }
+
+            LaunchedEffect(
+                uiState.messages.size,
+                uiState.streamingResponse,
+                uiState.onDeviceThinking
+            ) {
+                if (!pinnedToTail) return@LaunchedEffect
+                val target = listState.layoutInfo.totalItemsCount - 1
+                // Not animated: deltas land about fifteen times a second and an animation per
+                // delta never finishes, so the list crawls instead of keeping up.
+                if (target >= 0) listState.scrollToItem(target)
+            }
+
             LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                state = rememberLazyListState(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = if (showGreeting) {
+                    Modifier.fillMaxWidth()
+                } else {
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                },
+                state = listState,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(groupedMessages, key = { 
                     if (it.isAssistantToolCalls) "tools-${it.toolCalls.map { tc -> tc.id }.joinToString()}" 
@@ -419,34 +457,27 @@ fun ChatScreen(
                     }
                 }
 
+                // Reasoning comes before the answer it produced, and while a turn is in
+                // flight this row is the only thing moving on a tool-heavy round -- so it
+                // carries the tail of the reasoning rather than just the word "Thinking".
+                val thinking = uiState.onDeviceThinking?.takeIf { it.isNotBlank() }
+                if (thinking != null || (uiState.isLoading && uiState.streamingResponse.isNullOrBlank())) {
+                    item(key = "reasoning") {
+                        ReasoningLine(text = thinking.orEmpty())
+                    }
+                }
+
                 uiState.streamingResponse?.takeIf { it.isNotBlank() }?.let { partial ->
                     item(key = "streaming") {
-                        StreamingBubble(text = partial)
+                        // Rendered exactly like a finished assistant turn, so the hand-off to
+                        // the persisted message is invisible.
+                        AssistantTurn(content = partial, markdown = false)
                     }
                 }
 
                 uiState.onDeviceStats?.takeIf { it.isNotBlank() }?.let { stats ->
                     item(key = "stats") {
-                        Text(
-                            text = stats,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-                        )
-                    }
-                }
-
-                uiState.onDeviceThinking?.takeIf { it.isNotBlank() }?.let { thinking ->
-                    item(key = "thinking") {
-                        ThinkingBubble(text = thinking)
-                    }
-                }
-
-                // The streaming bubble is itself the progress indicator once text starts,
-                // and two of them stacked reads as a stuck reply.
-                if (uiState.isLoading && uiState.streamingResponse.isNullOrBlank()) {
-                    item {
-                        LoadingIndicator()
+                        StatusLine(text = stats)
                     }
                 }
             }
@@ -486,7 +517,8 @@ fun ChatScreen(
                 onAttachClick = {
                     showAttachDialog = true
                 },
-                enabled = !uiState.isLoading
+                enabled = !uiState.isLoading,
+                canSend = userInput.isNotBlank() || uiState.pendingAttachments.isNotEmpty()
             )
         }
     }
@@ -603,34 +635,111 @@ fun ChatScreen(
     }
 }
 
+/**
+ * A turn in the transcript.
+ *
+ * The two roles are shaped differently on purpose. What the user said is short and benefits from
+ * being visibly theirs, so it sits in a tinted bubble on the right, capped short of the full
+ * column. A reply is long and often carries markdown, code or a table, so it gets the whole width
+ * with no container competing with it -- a card around a code block wastes the only space that
+ * matters on a phone.
+ */
 @Composable
 fun MessageBubble(message: ChatMessage) {
-    val isUser = message.role == MessageRole.USER
+    if (message.role == MessageRole.USER) UserTurn(message) else AssistantTurn(message.content)
+}
 
-    Card(
+@Composable
+private fun AssistantTurn(content: String, markdown: Boolean = true) {
+    if (content.isBlank()) return
+    Box(modifier = Modifier.fillMaxWidth()) {
+        if (markdown) {
+            MarkdownText(markdown = content, modifier = Modifier.fillMaxWidth())
+        } else {
+            // A partial document has unbalanced fences and half-written tables, and re-parsing
+            // all of it every delta is wasted work at 12 tok/s. The finished turn renders as
+            // markdown a moment later.
+            Text(
+                text = content,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+/** Collapsed reasoning. Shows the live tail so a long turn visibly has a pulse. */
+@Composable
+private fun ReasoningLine(text: String) {
+    var expanded by remember { mutableStateOf(false) }
+    val canExpand = text.isNotBlank()
+    // The tail, not the first line: reasoning arrives as one long run of deltas, and clipping
+    // the front would leave a caption that never changes while the model works.
+    val tail = remember(text) {
+        text.trim().replace(Regex("\\s+"), " ").takeLast(REASONING_TAIL_CHARS)
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .wrapContentHeight(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isUser)
-                MaterialTheme.colorScheme.primaryContainer
-            else
-                MaterialTheme.colorScheme.surfaceVariant
-        )
+            .then(if (canExpand) Modifier.clickable { expanded = !expanded } else Modifier)
     ) {
-        Column(
-            modifier = Modifier.padding(12.dp)
-        ) {
-            Text(
-                text = if (isUser) "You" else "Assistant",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (isUser)
-                    MaterialTheme.colorScheme.primary
-                else
-                    MaterialTheme.colorScheme.onSurfaceVariant
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = if (expanded) "Hide reasoning" else "Show reasoning",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            if (isUser && message.attachments.isNotEmpty()) {
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = if (expanded || !canExpand) "Thinking\u2026" else tail,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (expanded) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 20.dp)
+            )
+        }
+    }
+}
+
+/** Throughput and other after-the-fact notes, in the same visual key as [ReasoningLine]. */
+@Composable
+private fun StatusLine(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 20.dp)
+    )
+}
+
+private const val REASONING_TAIL_CHARS = 90
+
+@Composable
+private fun UserTurn(message: ChatMessage) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(USER_BUBBLE_WIDTH),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            shape = RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            if (message.attachments.isNotEmpty()) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -657,20 +766,18 @@ fun MessageBubble(message: ChatMessage) {
                         )
                     }
                 }
-            } else if (isUser) {
+            } else {
                 Text(
                     text = message.content,
                     style = MaterialTheme.typography.bodyMedium
                 )
-            } else {
-                MarkdownText(
-                    markdown = message.content,
-                    modifier = Modifier.fillMaxWidth()
-                )
+            }
             }
         }
     }
 }
+
+private const val USER_BUBBLE_WIDTH = 0.85f
 
 @Composable
 fun ToolCallIndicator(toolCalls: List<com.aiassistant.domain.model.ToolCall>) {
@@ -806,110 +913,6 @@ private fun getToolIcon(name: String) = when (name) {
 }
 
 @Composable
-private fun StreamingBubble(text: String) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .wrapContentHeight(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                text = "Assistant",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            // Deliberately not MarkdownText: a partial document has unbalanced fences and
-            // half-written tables, and re-parsing the whole thing on every delta is wasted work
-            // at 12 tok/s. The finished message renders as markdown a moment later.
-            Text(
-                text = text,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-    }
-}
-
-/**
- * Reasoning routed out of the answer via the model's thought channel. Collapsed by default: it is
- * context, not the reply, and reasoning models emit a lot of it.
- */
-@Composable
-private fun ThinkingBubble(text: String) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded },
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Psychology,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Thinking",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = if (expanded) "Hide" else "Show",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            if (expanded) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun LoadingIndicator() {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                Icons.Default.Lightbulb,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Text("Thinking...")
-        }
-    }
-}
-
-@Composable
 fun AlertBanner(
     message: String,
     onDismiss: () -> Unit
@@ -948,7 +951,8 @@ fun InputArea(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onAttachClick: () -> Unit,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    canSend: Boolean = true
 ) {
     Column(
         modifier = Modifier
@@ -1001,10 +1005,11 @@ fun InputArea(
 
             FilledIconButton(
                 onClick = onSend,
-                enabled = (input.isNotBlank() || true) && enabled
+                // Was `(input.isNotBlank() || true)`, which is always true; an attachment with
+                // no text is still sendable, so the caller decides.
+                enabled = canSend && enabled
             ) {
-                @Suppress("DEPRECATION")
-                Icon(Icons.Default.Send, "Send")
+                Icon(Icons.AutoMirrored.Filled.Send, "Send")
             }
         }
     }
