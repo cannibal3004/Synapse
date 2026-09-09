@@ -49,6 +49,7 @@ import com.aiassistant.domain.model.MessageRole
 import com.aiassistant.domain.model.ToolCall
 import com.aiassistant.presentation.vm.ChatViewModel
 import com.aiassistant.presentation.vm.ChatUiState
+import com.google.gson.JsonParser
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.PermissionStatus
@@ -909,34 +910,42 @@ fun ToolCallIcon(
         MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    Box(
-        modifier = Modifier
-            .size(36.dp)
-            .clip(CircleShape)
-            .background(
-                color = if (isExpanded)
-                    MaterialTheme.colorScheme.primaryContainer
-                else
-                    MaterialTheme.colorScheme.surfaceVariant
-            )
-            .clickable(onClick = onClick)
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = "$toolName called $count time${if (count > 1) "s" else ""}",
-            tint = tint,
+    // Outer box carries no clip and is wider than the icon, so the badge has somewhere to sit.
+    // It used to be a child of the clipped circle, which cut the corner off it.
+    Box(modifier = Modifier.size(42.dp)) {
+        Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(8.dp)
-        )
+                .size(36.dp)
+                .align(Alignment.BottomStart)
+                .clip(CircleShape)
+                .background(
+                    color = if (isExpanded)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant
+                )
+                .clickable(onClick = onClick)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = "$toolName called $count time${if (count > 1) "s" else ""}",
+                tint = tint,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(8.dp)
+            )
+        }
 
         if (count > 1) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .size(16.dp)
+                    // Sized to its content with a circular floor, so a two-digit count becomes
+                    // a pill instead of overflowing a fixed circle.
+                    .defaultMinSize(minWidth = 18.dp, minHeight = 18.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary),
+                    .background(MaterialTheme.colorScheme.primary)
+                    .padding(horizontal = 4.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -944,7 +953,8 @@ fun ToolCallIcon(
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontWeight = FontWeight.Bold
                     ),
-                    color = MaterialTheme.colorScheme.onPrimary
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    maxLines = 1
                 )
             }
         }
@@ -962,7 +972,8 @@ fun ToolCallDetail(toolCall: com.aiassistant.domain.model.ToolCall) {
         )
     ) {
         Column(
-            modifier = Modifier.padding(8.dp)
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
                 text = toolCall.name,
@@ -970,15 +981,58 @@ fun ToolCallDetail(toolCall: com.aiassistant.domain.model.ToolCall) {
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = toolCall.arguments,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+
+            val fields = remember(toolCall.arguments) { parseToolArguments(toolCall.arguments) }
+            if (fields == null) {
+                // Arguments stream in fragment by fragment, so a call still being assembled is
+                // not valid JSON yet. Showing the raw text beats showing nothing.
+                Text(
+                    text = toolCall.arguments,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                fields.forEach { (key, value) ->
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = key,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text(
+                            text = value,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
         }
     }
 }
+
+/**
+ * Tool arguments as label/value pairs, or null when they are not a JSON object.
+ *
+ * Nested objects and arrays keep their JSON form -- there is no generic way to lay those out that
+ * beats showing the structure, and in practice they are rare next to a url or an expression.
+ */
+private fun parseToolArguments(raw: String): List<Pair<String, String>>? = runCatching {
+    JsonParser.parseString(raw).asJsonObject.entrySet().map { (key, value) ->
+        val rendered = when {
+            value.isJsonNull -> "null"
+            value.isJsonPrimitive -> value.asString
+            else -> value.toString()
+        }
+        key.replace('_', ' ') to rendered.take(TOOL_ARGUMENT_MAX_CHARS)
+    }
+}.getOrNull()?.takeIf { it.isNotEmpty() }
+
+private const val TOOL_ARGUMENT_MAX_CHARS = 400
 
 @Composable
 private fun getToolIcon(name: String) = when (name) {
