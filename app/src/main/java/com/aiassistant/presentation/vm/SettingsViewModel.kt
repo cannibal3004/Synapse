@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
+import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 
 data class SettingsUiState(
     val apiKey: String? = null,
@@ -27,6 +28,7 @@ data class SettingsUiState(
     val systemPrompt: String? = null,
     val embeddingModel: String? = "text-embedding-3-small",
     val exaApiKey: String? = null,
+    val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
     val onDeviceSettings: OnDeviceLlmSettings? = null,
     val isSaved: Boolean = false
 )
@@ -87,7 +89,8 @@ class SettingsViewModel @Inject constructor(
         defaultModel: String?,
         systemPrompt: String?,
         embeddingModel: String?,
-        exaApiKey: String?
+        exaApiKey: String?,
+        maxToolRounds: Int?
     ) {
         viewModelScope.launch {
             apiKey?.let { settingsRepository.saveApiKey(it) }
@@ -96,6 +99,7 @@ class SettingsViewModel @Inject constructor(
             systemPrompt?.let { settingsRepository.saveSystemPrompt(it) }
             embeddingModel?.let { settingsRepository.saveEmbeddingModel(it) }
             exaApiKey?.let { settingsRepository.saveExaApiKey(it) }
+            maxToolRounds?.let { settingsRepository.saveMaxToolRounds(it) }
 
             sharedPreferences.edit().apply {
                 if (exaApiKey != null) {

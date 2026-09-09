@@ -14,6 +14,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -38,6 +40,7 @@ fun SettingsScreen(
     var systemPrompt by remember { mutableStateOf(settings.systemPrompt ?: "") }
     var embeddingModel by remember { mutableStateOf(settings.embeddingModel ?: "text-embedding-3-small") }
     var exaApiKey by remember { mutableStateOf(settings.exaApiKey ?: "") }
+    var maxToolRounds by remember { mutableStateOf(settings.maxToolRounds.toString()) }
     var showSaveToast by remember { mutableStateOf(false) }
 
     var onDeviceEnabled by remember { mutableStateOf(settings.onDeviceSettings?.enabled ?: false) }
@@ -74,6 +77,7 @@ fun SettingsScreen(
         systemPrompt = settings.systemPrompt ?: ""
         embeddingModel = settings.embeddingModel ?: "text-embedding-3-small"
         exaApiKey = settings.exaApiKey ?: ""
+        maxToolRounds = settings.maxToolRounds.toString()
         settings.onDeviceSettings?.let { ods ->
             onDeviceEnabled = ods.enabled
             onDeviceModelName = ods.modelName
@@ -198,6 +202,27 @@ fun SettingsScreen(
                 placeholder = { Text("exa-api-...") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = maxToolRounds,
+                onValueChange = { maxToolRounds = it.filter(Char::isDigit) },
+                label = { Text("Max Tool Rounds") },
+                placeholder = { Text("10") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Text(
+                text = "How many times the model may call tools before it has to answer. " +
+                    "Applies to hosted models, on-device and scheduled tasks. On-device runs " +
+                    "usually stop earlier anyway, when the context fills.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 4.dp)
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -465,7 +490,8 @@ fun SettingsScreen(
                         defaultModel = if (defaultModel.isEmpty()) null else defaultModel,
                         systemPrompt = if (systemPrompt.isEmpty()) null else systemPrompt,
                         embeddingModel = if (embeddingModel.isEmpty()) null else embeddingModel,
-                        exaApiKey = if (exaApiKey.isEmpty()) null else exaApiKey
+                        exaApiKey = if (exaApiKey.isEmpty()) null else exaApiKey,
+                        maxToolRounds = maxToolRounds.toIntOrNull()
                     )
 
                     // copy() rather than a fresh instance: sampler settings are not edited on

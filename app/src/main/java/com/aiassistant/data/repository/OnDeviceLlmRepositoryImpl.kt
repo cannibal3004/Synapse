@@ -104,8 +104,10 @@ class OnDeviceLlmRepositoryImpl @Inject constructor(
         Log.e("OnDeviceLlmRepository", "Model initialization failed", it)
     }
 
-    override fun chatStream(messages: List<ChatMessage>): Flow<OnDeviceLlmEngine.ChatEvent> =
-        llmClient.chatStream(messages)
+    override fun chatStream(
+        messages: List<ChatMessage>,
+        maxToolRounds: Int
+    ): Flow<OnDeviceLlmEngine.ChatEvent> = llmClient.chatStream(messages, maxToolRounds)
 
     override suspend fun downloadModel(
         huggingfaceRepo: String,

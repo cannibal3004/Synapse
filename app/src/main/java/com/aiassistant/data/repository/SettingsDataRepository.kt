@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -20,6 +21,7 @@ object SettingsKeys {
     val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
     val EMBEDDING_MODEL = stringPreferencesKey("embedding_model")
     val EXA_API_KEY = stringPreferencesKey("exa_api_key")
+    val MAX_TOOL_ROUNDS = intPreferencesKey("max_tool_rounds")
 }
 
 @Singleton
@@ -36,7 +38,9 @@ class SettingsDataRepository @javax.inject.Inject constructor(
                 defaultModel = preferences[SettingsKeys.DEFAULT_MODEL],
                 systemPrompt = preferences[SettingsKeys.SYSTEM_PROMPT],
                 embeddingModel = preferences[SettingsKeys.EMBEDDING_MODEL] ?: "text-embedding-3-small",
-                exaApiKey = preferences[SettingsKeys.EXA_API_KEY]
+                exaApiKey = preferences[SettingsKeys.EXA_API_KEY],
+                maxToolRounds = preferences[SettingsKeys.MAX_TOOL_ROUNDS]
+                    ?: DEFAULT_MAX_TOOL_ROUNDS
             )
         }
 
@@ -114,5 +118,17 @@ class SettingsDataRepository @javax.inject.Inject constructor(
 
     suspend fun getSystemPrompt(): String? {
         return dataStore.data.map { it[SettingsKeys.SYSTEM_PROMPT] }.first()
+    }
+
+    suspend fun saveMaxToolRounds(rounds: Int) {
+        dataStore.edit { preferences ->
+            preferences[SettingsKeys.MAX_TOOL_ROUNDS] = rounds.coerceIn(1, 50)
+        }
+    }
+
+    suspend fun getMaxToolRounds(): Int {
+        return dataStore.data
+            .map { it[SettingsKeys.MAX_TOOL_ROUNDS] ?: DEFAULT_MAX_TOOL_ROUNDS }
+            .first()
     }
 }

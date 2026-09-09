@@ -327,7 +327,10 @@ class OnDeviceLlmEngine(
         conversation = createConversation(eng, config, capabilities ?: ModelCapabilities())
     }
 
-    fun chatStream(messages: List<ChatMessage>): Flow<ChatEvent> = channelFlow {
+    fun chatStream(
+        messages: List<ChatMessage>,
+        maxToolRounds: Int = MAX_TOOL_ROUNDS
+    ): Flow<ChatEvent> = channelFlow {
         val conv = conversation ?: run {
             send(ChatEvent.Error("Model not initialized"))
             return@channelFlow
@@ -347,7 +350,7 @@ class OnDeviceLlmEngine(
             var round = 0
             val deadline = System.currentTimeMillis() + TOOL_LOOP_BUDGET_MS
 
-            while (round < MAX_TOOL_ROUNDS) {
+            while (round < maxToolRounds) {
                 val roundText = StringBuilder()
                 // Characters of this round already streamed to the caller.
                 var sent = 0
@@ -1085,7 +1088,11 @@ class OnDeviceLlmEngine(
 
         /** Default KV budget; override per model with a sidecar `.json`. */
         private const val DEFAULT_CONTEXT_TOKENS = 16384
-        private const val MAX_TOOL_ROUNDS = 25
+        /**
+         * Fallback only; the caller passes the user's setting. Rounds are not the binding limit
+         * on-device -- context pressure and the per-round timeout stop the loop first.
+         */
+        private const val MAX_TOOL_ROUNDS = 10
         private const val TOOL_LOOP_BUDGET_MS = 3 * 60 * 1000L
 
         /** Hard ceiling on one generation, so a degenerate sampler cannot run for its whole

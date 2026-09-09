@@ -28,6 +28,7 @@ import kotlinx.coroutines.withContext
 import java.time.format.DateTimeFormatter
 import java.time.ZonedDateTime
 import javax.inject.Inject
+import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 
 class TaskExecutor @Inject constructor(
     private val chatApiRepository: ChatApiRepository,
@@ -48,6 +49,7 @@ class TaskExecutor @Inject constructor(
         defaultModel: String,
         defaultSystemPrompt: String,
         onDevice: Boolean = false,
+        maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
         onDeviceConversationId: String? = null,
         onProgress: ((progress: Float, message: String) -> Unit) = { _, _ -> }
     ): TaskExecutionResult {
@@ -69,9 +71,12 @@ class TaskExecutor @Inject constructor(
         onProgress(0f, "Starting task: ${task.title}")
 
         return if (onDevice) {
-            executeOnDeviceTask(task, onDeviceConversationId, startedAt, onProgress)
+            executeOnDeviceTask(task, onDeviceConversationId, startedAt, maxToolRounds, onProgress)
         } else {
-            executeCloudTask(task, apiKey, baseUrl, defaultModel, defaultSystemPrompt, startedAt, onProgress)
+            executeCloudTask(
+                task, apiKey, baseUrl, defaultModel, defaultSystemPrompt, startedAt,
+                maxToolRounds, onProgress
+            )
         }
     }
 
@@ -82,10 +87,11 @@ class TaskExecutor @Inject constructor(
         defaultModel: String,
         defaultSystemPrompt: String,
         startedAt: Long,
+        maxToolRounds: Int,
         onProgress: ((progress: Float, message: String) -> Unit)
     ): TaskExecutionResult {
         var toolCallsUsed = mutableListOf<String>()
-        val maxRounds = 10
+        val maxRounds = maxToolRounds
 
         return withContext(Dispatchers.IO) {
             try {
@@ -196,6 +202,7 @@ class TaskExecutor @Inject constructor(
         task: com.aiassistant.domain.model.ScheduledTask,
         conversationId: String?,
         startedAt: Long,
+        maxToolRounds: Int,
         onProgress: ((progress: Float, message: String) -> Unit)
     ): TaskExecutionResult {
         return withContext(Dispatchers.IO) {
@@ -323,7 +330,8 @@ class TaskExecutor @Inject constructor(
                 var chatError: String? = null
 
                 onDeviceLlmRepository.resetConversation()
-                onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
+                onDeviceLlmRepository.chatStream(domainMessages, maxToolRounds)
+                    .collect { event ->
                     when (event) {
                         is com.aiassistant.domain.llm.OnDeviceLlmEngine.ChatEvent.Chunk -> {
                             fullResponse += event.text

@@ -2,6 +2,7 @@ package com.aiassistant.domain.repository
 
 import com.aiassistant.domain.llm.LlmBackend
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
+import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 import com.aiassistant.domain.model.ChatMessage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,7 +39,10 @@ interface OnDeviceLlmRepository {
         contextTokens: Int? = null
     ): Result<Unit>
 
-    fun chatStream(messages: List<ChatMessage>): Flow<OnDeviceLlmEngine.ChatEvent>
+    fun chatStream(
+        messages: List<ChatMessage>,
+        maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS
+    ): Flow<OnDeviceLlmEngine.ChatEvent>
 
     suspend fun downloadModel(
         huggingfaceRepo: String = OnDeviceLlmEngine.DEFAULT_HUGGINGFACE_REPO,

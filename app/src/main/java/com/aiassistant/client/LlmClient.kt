@@ -27,6 +27,7 @@ import com.aiassistant.service.LlmIpc.EXTRA_BACKEND
 import com.aiassistant.service.LlmIpc.EXTRA_CONTEXT_TOKENS
 import com.aiassistant.service.LlmIpc.EXTRA_ENABLE_THINKING
 import com.aiassistant.service.LlmIpc.EXTRA_MAX_OUTPUT_TOKENS
+import com.aiassistant.service.LlmIpc.EXTRA_MAX_TOOL_ROUNDS
 import com.aiassistant.service.LlmIpc.EXTRA_MESSAGES_JSON
 import com.aiassistant.service.LlmIpc.EXTRA_MODEL_PATH
 import com.aiassistant.service.LlmIpc.EXTRA_SYSTEM_PROMPT
@@ -214,7 +215,10 @@ class LlmClient @Inject constructor(
         } ?: OnDeviceLlmEngine.EngineState()
     }
 
-    fun chatStream(messages: List<ChatMessage>): Flow<OnDeviceLlmEngine.ChatEvent> = callbackFlow {
+    fun chatStream(
+        messages: List<ChatMessage>,
+        maxToolRounds: Int
+    ): Flow<OnDeviceLlmEngine.ChatEvent> = callbackFlow {
         val messenger = awaitService() ?: run {
             trySend(OnDeviceLlmEngine.ChatEvent.Error("Service bind timeout"))
             close()
@@ -258,6 +262,9 @@ class LlmClient @Inject constructor(
                     EXTRA_MESSAGES_JSON,
                     gson.toJson(messages.map { ChatMessageDto.fromChatMessage(it) })
                 )
+                // Per request rather than part of the engine config: changing it must not force
+                // a model reload, and it does not affect how the engine is built.
+                putInt(EXTRA_MAX_TOOL_ROUNDS, maxToolRounds)
             }
         }
 

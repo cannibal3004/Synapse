@@ -282,7 +282,13 @@ fun ChatScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("AI Assistant") },
+                title = {
+                    Text(
+                        text = uiState.conversationTitle.ifBlank { "New conversation" },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onToggleDrawer) {
                         Icon(Icons.Default.Menu, "Menu")

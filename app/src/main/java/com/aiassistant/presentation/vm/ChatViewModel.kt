@@ -40,6 +40,7 @@ import java.io.File
 import java.time.format.DateTimeFormatter
 import java.time.ZonedDateTime
 import javax.inject.Inject
+import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
@@ -60,7 +61,8 @@ data class ChatUiState(
     val streamingResponse: String? = null,
     val onDeviceCapabilities: OnDeviceLlmEngine.ModelCapabilities? = null,
     /** Bundle filename in on-device mode; the cloud model name is [model]. */
-    val onDeviceModelName: String = ""
+    val onDeviceModelName: String = "",
+    val conversationTitle: String = ""
 )
 
 private const val MEMORY_INJECTION_LIMIT = 5
@@ -82,6 +84,7 @@ class ChatViewModel @Inject constructor(
     private val _apiKey = MutableStateFlow<String?>(null)
     private val _baseUrl = MutableStateFlow<String?>(null)
     private val _systemPrompt = MutableStateFlow<String?>(null)
+    private val _maxToolRounds = MutableStateFlow(DEFAULT_MAX_TOOL_ROUNDS)
     private val _model = MutableStateFlow("")
     private val _isOnDeviceMode = MutableStateFlow(false)
 
@@ -115,6 +118,7 @@ class ChatViewModel @Inject constructor(
                 _apiKey.value = settings.apiKey
                 _baseUrl.value = settings.apiBaseUrl
                 _systemPrompt.value = settings.systemPrompt
+                _maxToolRounds.value = settings.maxToolRounds
                 _model.value = settings.defaultModel ?: ""
                 Log.d("ChatViewModel", "Settings loaded: baseUrl=${settings.apiBaseUrl}, model=${settings.defaultModel}")
             }
@@ -168,6 +172,9 @@ class ChatViewModel @Inject constructor(
                         conversationId = id,
                         isNewConversation = false,
                         messages = emptyList(),
+                        // Cleared, not set to the placeholder row title: the top bar shows its
+                        // own "New conversation" until the first message names this one.
+                        conversationTitle = "",
                         systemPrompt = systemPrompt,
                         model = _model.value,
                         pendingAttachments = emptyList()
@@ -178,6 +185,7 @@ class ChatViewModel @Inject constructor(
                         conversationId = null,
                         isNewConversation = true,
                         messages = emptyList(),
+                        conversationTitle = "",
                         systemPrompt = systemPrompt,
                         model = _model.value,
                         pendingAttachments = emptyList()
@@ -204,7 +212,8 @@ class ChatViewModel @Inject constructor(
                     conversationId = conversationId,
                     messages = messages,
                     systemPrompt = conversation?.systemPrompt,
-                    model = conversation?.model ?: _model.value
+                    model = conversation?.model ?: _model.value,
+                    conversationTitle = conversation?.title.orEmpty()
                 )
                 _systemPrompt.value = conversation?.systemPrompt
             } catch (e: Exception) {
@@ -289,7 +298,8 @@ class ChatViewModel @Inject constructor(
                     )
                     _uiState.value = _uiState.value.copy(
                         conversationId = effectiveConversationId,
-                        isNewConversation = false
+                        isNewConversation = false,
+                        conversationTitle = title
                     )
                     Log.d("ChatViewModel", "Persisted new conversation: $effectiveConversationId")
                 } else {
@@ -412,7 +422,8 @@ class ChatViewModel @Inject constructor(
         val thinkingText = StringBuilder()
 
         withContext(Dispatchers.IO) {
-            onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
+            onDeviceLlmRepository.chatStream(domainMessages, _maxToolRounds.value)
+                .collect { event ->
                 when (event) {
                     is OnDeviceLlmEngine.ChatEvent.Chunk -> {
                         fullResponse += event.text
@@ -467,7 +478,7 @@ class ChatViewModel @Inject constructor(
         val tools = ToolManager.buildToolDefinitions()
         var assistantContent = ""
         var round = 0
-        val maxRounds = 10
+        val maxRounds = _maxToolRounds.value
         var toolCalls: List<com.aiassistant.data.model.api.ToolCall>? = null
 
         do {

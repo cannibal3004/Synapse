@@ -79,6 +79,7 @@ class TaskWorker(
         val defaultModel = settingsRepository.getDefaultModel() ?: ""
         val defaultSystemPrompt = settingsRepository.getSystemPrompt() ?: ""
         val apiKey = settingsRepository.getApiKey() ?: ""
+        val maxToolRounds = settingsRepository.getMaxToolRounds()
 
         if (!task.onDevice && apiKey.isBlank()) {
             Log.d(TAG, "No API key configured for cloud task $taskId")
@@ -104,6 +105,7 @@ class TaskWorker(
                     defaultModel = defaultModel,
                     defaultSystemPrompt = defaultSystemPrompt,
                     onDevice = false,
+                    maxToolRounds = maxToolRounds,
                     onDeviceConversationId = null,
                     onProgress = { _, message ->
                         notificationHelper.updateRunningTaskNotification(

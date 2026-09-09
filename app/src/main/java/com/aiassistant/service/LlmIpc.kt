@@ -39,6 +39,7 @@ internal object LlmIpc {
     const val EXTRA_MAX_OUTPUT_TOKENS = "maxOutputTokens"
     const val EXTRA_BACKEND = "backend"
     const val EXTRA_CONTEXT_TOKENS = "contextTokens"
+    const val EXTRA_MAX_TOOL_ROUNDS = "maxToolRounds"
     const val EXTRA_MESSAGES_JSON = "messagesJson"
 
     const val KEY_TEXT = "text"

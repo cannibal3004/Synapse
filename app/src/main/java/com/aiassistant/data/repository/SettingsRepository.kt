@@ -34,7 +34,8 @@ object SettingsRepository {
         val defaultModel: String? = null,
         val systemPrompt: String? = null,
         val embeddingModel: String? = "text-embedding-3-small",
-        val exaApiKey: String? = null
+        val exaApiKey: String? = null,
+        val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS
     )
 
     fun getSettings(): Flow<AppSettings> {
@@ -44,3 +45,12 @@ object SettingsRepository {
         }
     }
 }
+
+/**
+ * Tool-calling rounds allowed per turn.
+ *
+ * Ten is generous for a hosted model and unreachable on-device, where the tool loop stops on
+ * context pressure long before the count matters -- an on-device round is bounded by the KV, not
+ * by this. Kept in one place so lowering it for one path cannot quietly starve the other.
+ */
+const val DEFAULT_MAX_TOOL_ROUNDS = 10

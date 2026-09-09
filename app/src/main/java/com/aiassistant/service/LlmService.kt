@@ -32,6 +32,7 @@ import com.aiassistant.service.LlmIpc.EXTRA_BACKEND
 import com.aiassistant.service.LlmIpc.EXTRA_CONTEXT_TOKENS
 import com.aiassistant.service.LlmIpc.EXTRA_ENABLE_THINKING
 import com.aiassistant.service.LlmIpc.EXTRA_MAX_OUTPUT_TOKENS
+import com.aiassistant.service.LlmIpc.EXTRA_MAX_TOOL_ROUNDS
 import com.aiassistant.service.LlmIpc.EXTRA_MESSAGES_JSON
 import com.aiassistant.service.LlmIpc.EXTRA_MODEL_PATH
 import com.aiassistant.service.LlmIpc.EXTRA_SYSTEM_PROMPT
@@ -54,6 +55,7 @@ import com.aiassistant.service.LlmIpc.MSG_PING
 import com.aiassistant.service.LlmIpc.MSG_RESET_CONVERSATION
 import com.aiassistant.service.LlmIpc.MSG_SHUTDOWN
 import com.google.gson.Gson
+import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 import com.google.gson.reflect.TypeToken
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -195,7 +197,10 @@ class LlmService : Service() {
 
         serviceScope.launch {
             try {
-                engine.chatStream(messages).collect { event ->
+                val maxToolRounds = msg.data?.getInt(EXTRA_MAX_TOOL_ROUNDS)
+                    ?.takeIf { it > 0 }
+                    ?: DEFAULT_MAX_TOOL_ROUNDS
+                engine.chatStream(messages, maxToolRounds).collect { event ->
                     val replyMsg = when (event) {
                         is OnDeviceLlmEngine.ChatEvent.Chunk ->
                             bundled(CB_CHUNK, KEY_TEXT, event.text)
