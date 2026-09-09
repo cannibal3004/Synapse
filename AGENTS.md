@@ -272,14 +272,114 @@ Two mitigations, both needed:
 Seed a known value with a sidecar (`{"contextTokens": 4096}`) to get the right ceiling on the
 first turn instead of after one failure.
 
-`CONTEXT_PRESSURE_FRACTION` is a fraction of the *effective* capacity. Do **not** re-anchor it to the `context_length` a bundle's manifest quotes -- those are
-conversion choices, not model limits. Spark's manifest says 4096; the base model's
-`max_position_embeddings` is 1048576, and with 3-sliding-to-1-full layers (window 512) only 7 of
-its 28 layers carry full-attention KV, so long context is cheap for it.
+`CONTEXT_PRESSURE_FRACTION` is a fraction of the *effective* capacity. Do **not** re-anchor it
+to the `context_length` a bundle's manifest quotes -- those are conversion choices, not model
+limits. Spark's manifest says 4096 while the base model's `max_position_embeddings` is 1048576,
+and a re-export at a larger `CACHE` is a one-variable change to the conversion recipe
+(`hf-to-litertlm`, `spark_work/convert_spark.py`, `CACHE` env var).
 
-The binding constraint is RAM: KV size is a direct input to the OOM kills, and `MAX_NUM_TOKENS`
-(16384) is a single hardcoded figure applied to every model regardless of its weight size. It is
-the obvious next thing to make per-model.
+It was previously recorded here that long context is therefore *cheap* for Spark, on the grounds
+that only 7 of its 28 layers carry full-attention KV (the other 21 use a 512-token sliding
+window). That is true of the architecture and false of the export -- see the next section. Do not
+size anything on the sliding-window pattern.
+
+### What context actually costs
+
+KV is allocated **uniformly for every layer at the full exported length**, in fp32. The HF
+config's `sliding_window: 512` on 21 of 28 layers buys nothing: litert-torch's transposed KV cache
+is uniform, and `patch_modeling.py` exists precisely to route attention through it.
+
+For Spark-X2.5-1.7B (28 layers, 2 kv-heads, head_dim 256) that is
+`2 (K+V) x 2 x 256 = 1024` values per token per layer, so **28 x 1024 x 4 B = 112 KiB/token**.
+
+Measured on a Galaxy S24+ (11.35 GB), int4, `:llm` RSS:
+
+| exported `CACHE` | RSS | outcome |
+|---|---|---|
+| 4096 | 1.31 GB | fine |
+| 65536 | 7.9 GB | `LOW_MEMORY` / `OOM KILL` 29s into load |
+
+`(7.9 - 1.31) GB / 61440 tokens` = ~107 KiB/token, 94% of the predicted 112 -- the shortfall is
+that the 64k process was killed part-way through allocating. Non-KV footprint is therefore
+~840 MB, which projects to ~1.8 GB at 8192, ~2.7 GB at 16384, ~4.6 GB at 32768.
+
+Read the reason out of `dumpsys activity exit-info com.aiassistant` rather than guessing: it gives
+`reason`, `subreason` and the RSS at death. lmkd's own log said "no processes to kill" for the same
+event, so it was the kernel OOM killer, not the low-memory killer.
+
+**A bigger allocation also costs throughput on CPU, whether or not the tokens get used.** Same
+bundle, same 6 threads, same 586-token answer:
+
+| `CACHE` | prefill | decode | time to first token |
+|---|---|---|---|
+| 4096 | 67 tok/s | 11.9 tok/s | 17.7s |
+| 16384 | 20 tok/s | 4.1 tok/s | 63.4s |
+
+3.3x on prefill for allocation alone. The likely mechanism is `max_len` sitting in the innermost
+stride: the live prefix of each row is one cache line scattered across a 1.88 GB region, so a
+larger export means more TLB and cache misses per token. Budget context by what the device can
+*use*, not by what fits in RAM.
+
+`use_ringbuffers_local_attention` would fix this properly -- it sizes local-attention layers to
+their window instead of the full context, a ~4x reduction for Spark. It exists in litert-lm's
+Python API, its CLI (`--ringbuffers-local-attention`) and its C++ `GpuArtisanConfig`
+(`use_autosized_ringbuffers`), but **not in the Kotlin binding**: `Engine.initialize()` passes a
+fixed JNI argument list with no slot for it, and 0.17.0 is the newest published Android artifact.
+Nothing to do here until upstream exposes it.
+
+`ExperimentalFlags.filterChannelContentFromKvCache` does exist in the AAR and is currently unused;
+with thinking enabled it would keep reasoning content out of the KV.
+
+### int4 bundles decode garbage on the GPU path
+
+**int4 + `Backend.GPU()` is broken on this runtime. Route int4 to CPU via the sidecar.**
+
+From the very first decode step every sampled token is invalid. The runtime logs
+
+    llm_litert_compiled_model_executor.cc:1190] Invalid decode and sample result.
+    The sampled token is casted to 0 to avoid crash.
+
+once per step, and **token 0 is `<|start of sentence|>` in Spark's tokenizer** (1 = end of
+sentence, 2 = pad, 3/4 = `<think>`/`</think>`), so the visible output is that marker repeated until
+the output cap or the round timeout stops it. The native warning and the on-screen token loop are
+the same event, not two problems.
+
+Isolated by elimination:
+
+| bundle | backend | result |
+|---|---|---|
+| litert-community int4 | GPU | invalid logits |
+| own conversion, int4, `CACHE=4096` | GPU | invalid logits |
+| both of the above | CPU | correct, tools work |
+| Spark int8 | GPU | correct, 11.7 tok/s |
+
+Two independent conversions with different quantizer settings fail identically, and int8 on the
+same GPU is fine, so this is the ML Drift int4 decode path rather than anyone's export.
+
+It is **not** context pressure. Reproduced at `used=1523`, ceiling 2048, one 500-token tool result
+-- about 2023 tokens in a 4096 context, nothing near full. Tool-payload overflow and then output
+length were each offered as the explanation and each refuted by measurement; the budget fixes were
+worth making on their own terms, but they are not the cause of this.
+
+**The damage is engine-scoped and survives `resetConversation()`.** The executor belongs to the
+`Engine`, so a fresh `Conversation` inherits the poisoned state and every later turn fails too,
+until the process restarts. `chatStream` discards the engine when a round times out having decoded
+zero tokens -- but that signature does *not* catch this failure, which emits thousands of tokens at
+a healthy rate (2048 at 14.9 tok/s, all identical). Detecting extreme repetition is open work.
+
+### Practical conclusion on model choice
+
+Measured end state on a Galaxy S24+, Spark-X2.5-1.7B:
+
+| config | decode | prefill | `:llm` RSS | tools |
+|---|---|---|---|---|
+| **int4 @ 4096, CPU, 6 threads** | 11.9 tok/s | 67 tok/s | ~1.3 GB | yes |
+| int8 @ 4096, GPU | 11.7 tok/s | 111 tok/s | ~3.9 GB | yes, with the right template |
+| int4 @ 16384, CPU | 4.1 tok/s | 20 tok/s | ~2.7 GB | yes, but 63s to first token |
+
+int4 on CPU matches int8-on-GPU decode at a third of the memory, which matters because the RSS is
+what drives the OOM kills. The context tax and the GPU int4 defect together mean there is no
+configuration here that reaches the context an agentic loop wants; 4096-8192 is the usable range.
 
 ### Historical measurements (before the workarounds)
 
@@ -378,6 +478,16 @@ A backend-specific bundle is **not** required. Spark runs on GPU with its stock 
 gemma's dedicated `-gpu` file also works (loading as `GPU_ARTISAN`). Whether a stock bundle has a
 GPU-runnable graph is per-model, so treat it as "try it and look at the tokens/sec", not as a rule.
 
+**Take the chat template from the conversion pipeline, not from the model repo.** The vendor
+template on `XHToken/Spark-X2.5-1.7B` renders a tool turn as
+`'<tool_response>' ~ message.content ~ '</tool_response>'`, which assumes `message.content` is a
+string -- true when HF's `apply_chat_template` calls it, false for LiteRT-LM, which passes a list
+of content blocks `[{type: tool_response, name, response}]`. The list gets string-concatenated into
+the prompt and the model degenerates. `hf-to-litertlm`'s `templates/spark25_tools.jinja` handles
+both forms and is the one to use (its `spark25_think.jinja` has no tools block). A bundle converted
+with `USE_JINJA=1` already embeds its template, so do **not** drop a `.jinja` sidecar next to such a
+bundle -- the sidecar silently overrides the correct embedded template.
+
 **GPU and tools are mutually exclusive on gemma right now.** Tools need the sidecar template, and
 the upstream `chat_template.jinja` produces garbage against the Artisan GPU bundle (`<unused3296>`
 tokens) -- it matches the CPU bundle's format, not the GPU one. Verified independently of
@@ -401,8 +511,22 @@ a gemma-4-E2B generation). `START_STICKY` then restarts it with no model.
 `LlmClient` registers death handlers and fails in-flight requests when the process dies. Without
 them the reply flow never completes and the UI spins forever. Do not remove them.
 
-Generation is also always bounded (`maxOutputToken` defaults to 4096). Left unset it runs to EOS
-or the KV limit, which on CPU is tens of minutes.
+Generation is always bounded, and the bound is a share of the context rather than a constant:
+`outputTokenLimit` caps it at `MAX_OUTPUT_FRACTION` (0.25) of `contextTokens`. A bare 4096 default
+against a 4096-token bundle let one answer fill the KV with the prompt still resident.
+
+That allowance is also what `toolResultBudget` reserves, so prompt plus answer fits by
+construction -- the two budgets used to contradict each other (0.75 of the context for input plus
+0.5 for output). Keep the fraction modest: reserving half of a 4096 context starved a tool loop
+from 1500 characters in round 0 to 252 in round 1 to nothing in round 2, for a 71-token answer.
+
+An OOM kill during model load surfaced as "Model initialization timed out" because `sendAndAwait`
+resumes with null on process death and `initializeModel` mapped every null to a timeout. It now
+passes an `onDied` value, so a kill reads as a kill.
+
+`cpuThreads` in the sidecar sets `Backend.CPU(threadCount = ...)`, which is otherwise null and left
+to the runtime. Worth about 25% on a Galaxy S24+ at 6 threads (prefill 54 -> 67 tok/s), by keeping
+work off the two efficiency cores.
 
 ### Idle timeout
 
