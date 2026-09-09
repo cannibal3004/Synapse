@@ -322,8 +322,29 @@ class OnDeviceLlmEngine(
                     } ?: run {
                         runCatching { conv.cancelProcess() }
                         Log.w(TAG, "Round $round exceeded ${ROUND_TIMEOUT_MS}ms; cancelled")
-                        responseText.append("\n\n_Stopped: the model stopped making progress._")
-                        emit(ChatEvent.Done(responseText.toString(), readStats(conv)))
+                        val stats = readStats(conv)
+                        // Timing out having decoded nothing is not a slow model, it is a wedged
+                        // executor: every sample came back invalid and was cast to token 0, which
+                        // in Spark's tokenizer is <|start of sentence|> -- the token loop seen on
+                        // screen and the native "Invalid decode and sample result" warning are the
+                        // same event. That state sits in the engine, so recreating the
+                        // conversation does not clear it and every later turn fails too. Drop the
+                        // engine instead; the next turn re-initializes from scratch.
+                        val wedged = stats == null || stats.decodeTokens == 0
+                        if (wedged) {
+                            Log.w(TAG, "No valid tokens decoded; discarding the engine")
+                            closeConversation()
+                            closeEngine()
+                        }
+                        responseText.append(
+                            if (wedged) {
+                                "\n\n_The model stopped responding. Reloading it for the next " +
+                                    "message._"
+                            } else {
+                                "\n\n_Stopped: the model stopped making progress._"
+                            }
+                        )
+                        emit(ChatEvent.Done(responseText.toString(), stats))
                         return@flow
                     }
                 } catch (e: Exception) {
@@ -869,7 +890,14 @@ class OnDeviceLlmEngine(
         if (toolCount <= 0) return 0
         val used = runCatching { conv.getTokenCount() }.getOrNull()
             ?: return MAX_TOOL_RESULT_CHARS
-        val ceiling = (effectiveCapacity() * CONTEXT_PRESSURE_FRACTION).toInt()
+        // Reserve what the runtime has already been told it may generate. A fixed fraction is
+        // not enough on its own: 0.75 of the context for the prompt plus a 0.5 output allowance
+        // promises 1.25 of a context, and the overrun lands mid-answer rather than as an error.
+        val reserved = activeConfig?.let { outputTokenLimit(it) } ?: 0
+        val ceiling = minOf(
+            (effectiveCapacity() * CONTEXT_PRESSURE_FRACTION).toInt(),
+            effectiveCapacity() - reserved
+        )
         val headroomChars = (ceiling - used).coerceAtLeast(0) * CHARS_PER_TOKEN
         val perTool = (headroomChars / toolCount).coerceAtMost(MAX_TOOL_RESULT_CHARS)
         Log.d(
