@@ -340,8 +340,17 @@ fun ChatScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
-                .imePadding()
+                // Only the top comes from the Scaffold. Its bottom padding is the navigation
+                // bar inset, and adding the keyboard to that is a sum where it should be a max:
+                // an open keyboard covers the navigation bar, so stacking them left a
+                // navigation-bar-sized gap under the input. safeDrawing resolves the two to
+                // whichever is larger.
+                //
+                // This also pairs with android:windowSoftInputMode="adjustResize" on
+                // MainActivity and only makes sense alongside it -- left to adjustUnspecified
+                // the system panned the whole window up instead, which this then added to.
+                .padding(top = paddingValues.calculateTopPadding())
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
         ) {
             // The greeting and the list are alternatives, not siblings. Both used to claim
             // weight(1f), which is where the dead space top and bottom came from: an empty
