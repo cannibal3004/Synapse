@@ -419,6 +419,12 @@ fun ChatScreen(
                     }
                 }
 
+                uiState.streamingResponse?.takeIf { it.isNotBlank() }?.let { partial ->
+                    item(key = "streaming") {
+                        StreamingBubble(text = partial)
+                    }
+                }
+
                 uiState.onDeviceStats?.takeIf { it.isNotBlank() }?.let { stats ->
                     item(key = "stats") {
                         Text(
@@ -436,7 +442,9 @@ fun ChatScreen(
                     }
                 }
 
-                if (uiState.isLoading) {
+                // The streaming bubble is itself the progress indicator once text starts,
+                // and two of them stacked reads as a stuck reply.
+                if (uiState.isLoading && uiState.streamingResponse.isNullOrBlank()) {
                     item {
                         LoadingIndicator()
                     }
@@ -795,6 +803,35 @@ private fun getToolIcon(name: String) = when (name) {
     "code_interpreter" -> Icons.Default.Code
     "device_info" -> Icons.Default.Info
     else -> Icons.Default.Build
+}
+
+@Composable
+private fun StreamingBubble(text: String) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .wrapContentHeight(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "Assistant",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            // Deliberately not MarkdownText: a partial document has unbalanced fences and
+            // half-written tables, and re-parsing the whole thing on every delta is wasted work
+            // at 12 tok/s. The finished message renders as markdown a moment later.
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
 }
 
 /**

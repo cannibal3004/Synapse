@@ -56,6 +56,8 @@ data class ChatUiState(
     val onDeviceEngineReady: Boolean = false,
     val onDeviceThinking: String? = null,
     val onDeviceStats: String? = null,
+    /** The reply as far as it has arrived, shown until the finished message is persisted. */
+    val streamingResponse: String? = null,
     val onDeviceCapabilities: OnDeviceLlmEngine.ModelCapabilities? = null
 )
 
@@ -310,13 +312,15 @@ class ChatViewModel @Inject constructor(
                 val updatedMessages = messageRepository.getMessagesSync(effectiveConversationId)
                 _uiState.value = _uiState.value.copy(
                     messages = updatedMessages,
-                    isLoading = false
+                    isLoading = false,
+                    streamingResponse = null
                 )
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error sending message", e)
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    error = "Error: ${e.message}"
+                    error = "Error: ${e.message}",
+                    streamingResponse = null
                 )
             }
         }
@@ -387,7 +391,11 @@ class ChatViewModel @Inject constructor(
             .toMutableList()
 
         onDeviceLlmRepository.resetConversation()
-        _uiState.value = _uiState.value.copy(onDeviceThinking = null, onDeviceStats = null)
+        _uiState.value = _uiState.value.copy(
+            onDeviceThinking = null,
+            onDeviceStats = null,
+            streamingResponse = null
+        )
 
         var fullResponse = ""
         var chatError: String? = null
@@ -400,6 +408,7 @@ class ChatViewModel @Inject constructor(
                 when (event) {
                     is OnDeviceLlmEngine.ChatEvent.Chunk -> {
                         fullResponse += event.text
+                        _uiState.value = _uiState.value.copy(streamingResponse = fullResponse)
                     }
                     is OnDeviceLlmEngine.ChatEvent.Thinking -> {
                         thinkingText.append(event.text)

@@ -28,7 +28,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -327,15 +327,15 @@ class OnDeviceLlmEngine(
         conversation = createConversation(eng, config, capabilities ?: ModelCapabilities())
     }
 
-    fun chatStream(messages: List<ChatMessage>): Flow<ChatEvent> = flow {
+    fun chatStream(messages: List<ChatMessage>): Flow<ChatEvent> = channelFlow {
         val conv = conversation ?: run {
-            emit(ChatEvent.Error("Model not initialized"))
-            return@flow
+            send(ChatEvent.Error("Model not initialized"))
+            return@channelFlow
         }
 
         val lastUserMessage = messages.lastOrNull { it.role == MessageRole.USER } ?: run {
-            emit(ChatEvent.Error("No user message found"))
-            return@flow
+            send(ChatEvent.Error("No user message found"))
+            return@channelFlow
         }
 
         Log.d(TAG, "Starting chat stream for: ${lastUserMessage.content.take(50)}...")
@@ -349,6 +349,8 @@ class OnDeviceLlmEngine(
 
             while (round < MAX_TOOL_ROUNDS) {
                 val roundText = StringBuilder()
+                // Characters of this round already streamed to the caller.
+                var sent = 0
                 var degenerate = false
                 val responses = try {
                     // A single round is capped on the wall clock as well as on tokens. The
@@ -367,6 +369,24 @@ class OnDeviceLlmEngine(
                             stream.collect { message ->
                                 collected += message
                                 if (repetition.isDegenerate(message)) throw DegenerateOutput()
+
+                                message.contents.contents
+                                    .filterIsInstance<Content.Text>()
+                                    .forEach { part -> roundText.append(part.text) }
+                                streamable(roundText, sent)?.let { delta ->
+                                    sent += delta.length
+                                    send(ChatEvent.Chunk(delta))
+                                }
+                                // Channel content is out-of-band by definition, and the
+                                // name differs per model (Spark calls its channel
+                                // "thought", ours is "thinking"), so route whatever
+                                // channels come back rather than the one we declared.
+                                message.channels.forEach { (name, text) ->
+                                    if (text.isNotEmpty()) {
+                                        Log.d(TAG, "Channel '$name': ${text.length} chars")
+                                        send(ChatEvent.Thinking(text))
+                                    }
+                                }
                             }
                         } catch (_: DegenerateOutput) {
                             // Stop the native generation; without this it keeps running through
@@ -400,8 +420,8 @@ class OnDeviceLlmEngine(
                                 "\n\n_Stopped: the model stopped making progress._"
                             }
                         )
-                        emit(ChatEvent.Done(responseText.toString(), stats))
-                        return@flow
+                        send(ChatEvent.Done(responseText.toString(), stats))
+                        return@channelFlow
                     }
                 } catch (e: Exception) {
                     val remaining = capacityShortfall(e) ?: throw e
@@ -412,8 +432,8 @@ class OnDeviceLlmEngine(
                     responseText.append(
                         "\n\n_Ran out of context after $round tool round(s), so I stopped here._"
                     )
-                    emit(ChatEvent.Done(responseText.toString(), readStats(conv)))
-                    return@flow
+                    send(ChatEvent.Done(responseText.toString(), readStats(conv)))
+                    return@channelFlow
                 }
 
                 if (degenerate) {
@@ -424,28 +444,8 @@ class OnDeviceLlmEngine(
                     responseText.append(
                         "\n\n_The model stopped responding. Reloading it for the next message._"
                     )
-                    emit(ChatEvent.Done(responseText.toString(), stats))
-                    return@flow
-                }
-
-                for (response in responses) {
-                    response.contents.contents
-                        .filterIsInstance<Content.Text>()
-                        .forEach { part ->
-                            if (part.text.isNotEmpty()) {
-                                roundText.append(part.text)
-                                emit(ChatEvent.Chunk(part.text))
-                            }
-                        }
-                    // Channel content is out-of-band by definition, and the name differs per
-                    // model (Spark calls its channel "thought", ours is "thinking"), so route
-                    // whatever channels come back rather than only the one we declared.
-                    response.channels.forEach { (name, text) ->
-                        if (text.isNotEmpty()) {
-                            Log.d(TAG, "Channel '$name': ${text.length} chars")
-                            emit(ChatEvent.Thinking(text))
-                        }
-                    }
+                    send(ChatEvent.Done(responseText.toString(), stats))
+                    return@channelFlow
                 }
 
                 // Text arrives as deltas across many emissions, so a tool call need not land on
@@ -481,8 +481,8 @@ class OnDeviceLlmEngine(
                 stopToolLoopReason(conv, deadline, round)?.let { reason ->
                     Log.w(TAG, "Ending tool loop after round $round: $reason")
                     responseText.append("\n\n_Stopped calling tools: $reason._")
-                    emit(ChatEvent.Done(responseText.toString(), readStats(conv)))
-                    return@flow
+                    send(ChatEvent.Done(responseText.toString(), readStats(conv)))
+                    return@channelFlow
                 }
 
                 // Budget the payload against what the KV can still take, shared across the
@@ -495,8 +495,8 @@ class OnDeviceLlmEngine(
                     responseText.append(
                         "\n\n_Stopped calling tools: not enough context left for the results._"
                     )
-                    emit(ChatEvent.Done(responseText.toString(), readStats(conv)))
-                    return@flow
+                    send(ChatEvent.Done(responseText.toString(), readStats(conv)))
+                    return@channelFlow
                 }
 
                 val toolResponses = toolCalls.map { toolCall ->
@@ -515,10 +515,10 @@ class OnDeviceLlmEngine(
                 Log.w(TAG, "Hit tool-round ceiling ($MAX_TOOL_ROUNDS)")
             }
 
-            emit(ChatEvent.Done(responseText.toString(), readStats(conv)))
+            send(ChatEvent.Done(responseText.toString(), readStats(conv)))
         } catch (e: Exception) {
             Log.e(TAG, "Chat failed", e)
-            emit(ChatEvent.Error(e.message ?: "Unknown error"))
+            send(ChatEvent.Error(e.message ?: "Unknown error"))
         }
     }.flowOn(Dispatchers.Default)
 
@@ -954,6 +954,27 @@ class OnDeviceLlmEngine(
         return PendingToolCall(name, args, fromText = true)
     }
 
+    /**
+     * The next slice of this round that is safe to show, or null if there is nothing yet.
+     *
+     * Streaming raw deltas would put `<tool_call>calculator<arg_key>...` on screen, because tool
+     * calls arrive as ordinary text from models the runtime has no parser for and are only
+     * stripped once the round ends. So the visible text is recomputed from the whole round each
+     * time and the caller is sent only the part it has not seen.
+     *
+     * Two tails are held back rather than shown and retracted, since a delta cannot be unsent:
+     * an unfinished `<tool_call>` block, and a trailing `<` that has not closed yet and may be
+     * the start of one.
+     */
+    private fun streamable(round: StringBuilder, sent: Int): String? {
+        val visible = TOOL_CALL_BLOCK.replace(round, "")
+        val opener = visible.indexOf(TOOL_CALL_OPEN).takeIf { it >= 0 }
+        val dangling = visible.lastIndexOf('<').takeIf { it >= 0 && !visible.endsWith('>') }
+        val safeEnd = listOfNotNull(opener, dangling).minOrNull() ?: visible.length
+        if (safeEnd <= sent) return null
+        return visible.substring(sent, safeEnd)
+    }
+
     private fun stripToolCallMarkup(text: String): String =
         TOOL_CALL_BLOCK.replace(text, "").trim()
 
@@ -1109,6 +1130,7 @@ class OnDeviceLlmEngine(
         /** Floor, so a very small context still allows a usable answer. */
         private const val MIN_OUTPUT_TOKENS = 256
 
+        private const val TOOL_CALL_OPEN = "<tool_call>"
         private val TOOL_CALL_BLOCK = Regex(
             """<tool_call>(.*?)</tool_call>""",
             RegexOption.DOT_MATCHES_ALL
