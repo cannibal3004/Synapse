@@ -73,6 +73,7 @@ class SettingsViewModel @Inject constructor(
                 systemPrompt = appSettings.systemPrompt,
                 embeddingModel = appSettings.embeddingModel,
                 exaApiKey = savedExaKey ?: appSettings.exaApiKey,
+                maxToolRounds = appSettings.maxToolRounds,
                 onDeviceSettings = onDeviceSettings,
                 isSaved = false
             )

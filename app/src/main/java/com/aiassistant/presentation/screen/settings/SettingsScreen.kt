@@ -44,6 +44,14 @@ fun SettingsScreen(
     var exaApiKey by remember { mutableStateOf(settings.exaApiKey ?: "") }
     var maxToolRounds by remember { mutableStateOf(settings.maxToolRounds.toString()) }
 
+    // Whether anything on this screen has been typed into since it last took its values
+    // from the repository. Settings arrive as a flow and saving writes each key separately,
+    // so a single save emits several times -- and re-reading every field on every emission
+    // is what let those emissions overwrite an edit you had not saved yet. Saving clears the
+    // flag deliberately, so the fields then show what was actually persisted rather than what
+    // was typed: max tool rounds, for one, is clamped to 1..50 on the way in.
+    var formEdited by remember { mutableStateOf(false) }
+
     // The confirmation used to be a Snackbar composed inline at the end of the scrolling
     // column, below the save button, so it only existed off-screen: you saved, nothing
     // appeared, and it had already timed out by the time you scrolled to where it was.
@@ -80,6 +88,7 @@ fun SettingsScreen(
     }
 
     LaunchedEffect(settings) {
+        if (formEdited) return@LaunchedEffect
         apiKey = settings.apiKey ?: ""
         apiBaseUrl = settings.apiBaseUrl ?: "https://api.openai.com/"
         defaultModel = settings.defaultModel ?: ""
@@ -145,7 +154,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = apiKey,
-                onValueChange = { apiKey = it },
+                onValueChange = { apiKey = it; formEdited = true },
                 label = { Text("API Key") },
                 placeholder = { Text("sk-...") },
                 modifier = Modifier.fillMaxWidth(),
@@ -156,7 +165,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = apiBaseUrl,
-                onValueChange = { apiBaseUrl = it },
+                onValueChange = { apiBaseUrl = it; formEdited = true },
                 label = { Text("API Base URL") },
                 placeholder = { Text("https://api.openai.com/") },
                 modifier = Modifier.fillMaxWidth(),
@@ -173,7 +182,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = defaultModel,
-                onValueChange = { defaultModel = it },
+                onValueChange = { defaultModel = it; formEdited = true },
                 label = { Text("Default Model") },
                 placeholder = { Text("e.g., gpt-4, llama3, mistral") },
                 modifier = Modifier.fillMaxWidth(),
@@ -184,7 +193,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = systemPrompt,
-                onValueChange = { systemPrompt = it },
+                onValueChange = { systemPrompt = it; formEdited = true },
                 label = { Text("System Prompt") },
                 placeholder = { Text("You are a helpful assistant.") },
                 modifier = Modifier.fillMaxWidth(),
@@ -201,7 +210,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = embeddingModel,
-                onValueChange = { embeddingModel = it },
+                onValueChange = { embeddingModel = it; formEdited = true },
                 label = { Text("Embedding Model") },
                 placeholder = { Text("text-embedding-3-small") },
                 modifier = Modifier.fillMaxWidth(),
@@ -218,7 +227,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = exaApiKey,
-                onValueChange = { exaApiKey = it },
+                onValueChange = { exaApiKey = it; formEdited = true },
                 label = { Text("Exa API Key") },
                 placeholder = { Text("exa-api-...") },
                 modifier = Modifier.fillMaxWidth(),
@@ -229,7 +238,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = maxToolRounds,
-                onValueChange = { maxToolRounds = it.filter(Char::isDigit) },
+                onValueChange = { maxToolRounds = it.filter(Char::isDigit); formEdited = true },
                 label = { Text("Max Tool Rounds") },
                 placeholder = { Text("10") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -265,7 +274,7 @@ fun SettingsScreen(
                 )
                 Switch(
                     checked = onDeviceEnabled,
-                    onCheckedChange = { onDeviceEnabled = it }
+                    onCheckedChange = { onDeviceEnabled = it; formEdited = true }
                 )
             }
 
@@ -282,7 +291,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = onDeviceModelName,
-                onValueChange = { onDeviceModelName = it },
+                onValueChange = { onDeviceModelName = it; formEdited = true },
                 label = { Text("Model Name") },
                 placeholder = { Text("gemma-4-E2B-it.litertlm") },
                 modifier = Modifier.fillMaxWidth(),
@@ -293,7 +302,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = onDeviceHuggingfaceRepo,
-                onValueChange = { onDeviceHuggingfaceRepo = it },
+                onValueChange = { onDeviceHuggingfaceRepo = it; formEdited = true },
                 label = { Text("HuggingFace Repo") },
                 placeholder = { Text("litert-community/gemma-4-E2B-it-litert-lm") },
                 modifier = Modifier.fillMaxWidth(),
@@ -304,7 +313,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = onDeviceSystemPrompt,
-                onValueChange = { onDeviceSystemPrompt = it },
+                onValueChange = { onDeviceSystemPrompt = it; formEdited = true },
                 label = { Text("On-Device System Prompt") },
                 placeholder = { Text("You are a helpful AI assistant running on device.") },
                 modifier = Modifier.fillMaxWidth(),
@@ -331,7 +340,7 @@ fun SettingsScreen(
                 LlmBackend.entries.forEach { backend ->
                     FilterChip(
                         selected = onDeviceBackend == backend,
-                        onClick = { onDeviceBackend = backend },
+                        onClick = { onDeviceBackend = backend; formEdited = true },
                         label = {
                             Text(
                                 when (backend) {
@@ -351,7 +360,7 @@ fun SettingsScreen(
 
             OutlinedTextField(
                 value = onDeviceContextTokens,
-                onValueChange = { onDeviceContextTokens = it.filter(Char::isDigit) },
+                onValueChange = { onDeviceContextTokens = it.filter(Char::isDigit); formEdited = true },
                 label = { Text("Context Tokens (KV budget)") },
                 placeholder = { Text("16384") },
                 supportingText = {
@@ -374,7 +383,7 @@ fun SettingsScreen(
                 )
                 Switch(
                     checked = onDeviceThinking,
-                    onCheckedChange = { onDeviceThinking = it }
+                    onCheckedChange = { onDeviceThinking = it; formEdited = true }
                 )
             }
 
@@ -398,7 +407,7 @@ fun SettingsScreen(
                 )
                 Switch(
                     checked = onDeviceEmbeddings,
-                    onCheckedChange = { onDeviceEmbeddings = it }
+                    onCheckedChange = { onDeviceEmbeddings = it; formEdited = true }
                 )
             }
 
@@ -414,7 +423,7 @@ fun SettingsScreen(
 
                 OutlinedTextField(
                     value = onDeviceEmbeddingModel,
-                    onValueChange = { onDeviceEmbeddingModel = it },
+                    onValueChange = { onDeviceEmbeddingModel = it; formEdited = true },
                     label = { Text("Embedding Model Name") },
                     placeholder = { Text(OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_MODEL_NAME) },
                     modifier = Modifier.fillMaxWidth(),
@@ -425,7 +434,7 @@ fun SettingsScreen(
 
                 OutlinedTextField(
                     value = onDeviceEmbeddingRepo,
-                    onValueChange = { onDeviceEmbeddingRepo = it },
+                    onValueChange = { onDeviceEmbeddingRepo = it; formEdited = true },
                     label = { Text("Embedding HuggingFace Repo") },
                     placeholder = { Text(OnDeviceEmbeddingEngine.DEFAULT_EMBEDDING_REPO) },
                     modifier = Modifier.fillMaxWidth(),
@@ -531,6 +540,10 @@ fun SettingsScreen(
                             embeddingHuggingfaceRepo = onDeviceEmbeddingRepo
                         )
                     )
+
+                    // The form is no longer ahead of the repository, so let the next
+                    // emission back in -- that is what shows a normalised value.
+                    formEdited = false
 
                     // Nothing left to type, and it gets the keyboard out of the way of the
                     // confirmation.
