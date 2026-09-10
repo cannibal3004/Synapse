@@ -309,7 +309,7 @@ class ChatViewModel @Inject constructor(
                     effectiveConversationId = tempConversationId!!
                 }
 
-                messageRepository.addMessage(
+                val userMessageId = messageRepository.addMessage(
                     conversationId = effectiveConversationId,
                     role = "user",
                     content = userMessage
@@ -321,7 +321,12 @@ class ChatViewModel @Inject constructor(
                 val assistantContent = if (_isOnDeviceMode.value) {
                     getOnDeviceResponse(effectiveConversationId, userMessage, attachments)
                 } else {
-                    getCloudResponse(effectiveConversationId, userMessage, attachments)
+                    getCloudResponse(
+                        effectiveConversationId,
+                        userMessage,
+                        attachments,
+                        userMessageId
+                    )
                 }
 
                 messageRepository.addMessage(
@@ -457,11 +462,16 @@ class ChatViewModel @Inject constructor(
     private suspend fun getCloudResponse(
         conversationId: String,
         userMessage: String,
-        attachments: List<Attachment>
+        attachments: List<Attachment>,
+        userMessageId: String
     ): String {
         val (content, apiAttachments) = processAttachments(userMessage, attachments)
 
-        val history = buildApiMessages(conversationId, userMessage)
+        // The turn is already persisted by the time we get here, so the replay has to leave it
+        // out -- it was going out twice, once as the stored plain text and once as the copy
+        // built below. The copy is the one worth sending: it carries the images and any text
+        // pulled out of an attached document, neither of which is in the stored content.
+        val history = buildApiMessages(conversationId, userMessage, skipMessageId = userMessageId)
 
         val userApiMessage = if (apiAttachments.isNotEmpty()) {
             val contentList = mutableListOf<Map<String, Any>>()
@@ -686,7 +696,9 @@ class ChatViewModel @Inject constructor(
 
     private suspend fun buildApiMessages(
         conversationId: String,
-        query: String
+        query: String,
+        /** Excluded from the replay; the caller sends its own version of this message. */
+        skipMessageId: String? = null
     ): MutableList<ApiChatMessage> {
         val history = mutableListOf<ApiChatMessage>()
 
@@ -699,7 +711,7 @@ class ChatViewModel @Inject constructor(
 
         val messages = messageRepository.getMessagesSync(conversationId)
         messages.forEach { msg ->
-            if (msg.content.isNotBlank()) {
+            if (msg.id != skipMessageId && msg.content.isNotBlank()) {
                 history.add(
                     ApiChatMessage(
                         role = msg.role.name.lowercase(),
