@@ -98,6 +98,7 @@ class TermuxShellTool @Inject constructor(
 
         private const val RESULT_ACTION = "com.aiassistant.TERMUX_RESULT"
         private const val MAX_TIMEOUT_MS = 120_000L
+        private val KNOWN_SHELLS = setOf("bash", "sh", "zsh", "dash")
     }
 
     init {
@@ -142,31 +143,50 @@ class TermuxShellTool @Inject constructor(
                     ),
                     "required" to listOf("shell_command")
                 ),
-                executor = { arguments ->
-                    runCatching {
-                        val args = com.google.gson.Gson().fromJson(arguments, Map::class.java)
-                        val command = args["command"] as? String ?: "bash"
-                        val shellCommand = args["shell_command"] as? String
-                        val script = args["script"] as? String ?: null
-                        val workdir = args["workdir"] as? String ?: null
-                        val timeoutSeconds = (args["timeout"] as? Number)?.toInt() ?: 30
-
-                        if (!shellCommand.isNullOrBlank()) {
-                            android.util.Log.d("TermuxShellTool", "Executing: cmd=$command args=-c $shellCommand workdir=$workdir timeout=${timeoutSeconds}s")
-                            executeCommand(command, "-c $shellCommand", null, workdir, timeoutSeconds)
-                        } else if (!script.isNullOrBlank()) {
-                            android.util.Log.d("TermuxShellTool", "Executing: cmd=$command script=${script.length} chars workdir=$workdir timeout=${timeoutSeconds}s")
-                            executeCommand(command, "", script, workdir, timeoutSeconds)
-                        } else {
-                            throw IllegalArgumentException("Missing 'shell_command' parameter. You must provide a command to run.")
-                        }
-                    }
-                }
+                executor = { arguments -> runCatching { execute(arguments) } }
             )
         )
     }
 
-    fun executeCommand(
+    /**
+     * Runs a `termux_shell` call from the raw JSON arguments the model produced.
+     *
+     * The only entry point, on purpose. The call used to be unpacked twice -- once here and
+     * once again by ToolExecutor, which read a parameter named `arguments` that this tool has
+     * never advertised. So every hosted-model call arrived with no command at all: an empty
+     * interpreter resolved to the bin *directory* (Termux: "Non-regular file found at
+     * executable file path"), and naming bash without arguments left it waiting on a stdin
+     * that never came, until the timeout.
+     */
+    fun execute(argumentsJson: String): String {
+        val args = com.google.gson.Gson().fromJson(argumentsJson, Map::class.java)
+        val command = args["command"] as? String ?: "bash"
+        val shellCommand = args["shell_command"] as? String
+        val script = args["script"] as? String
+        val workdir = args["workdir"] as? String
+        val timeoutSeconds = (args["timeout"] as? Number)?.toInt() ?: 30
+
+        return when {
+            !shellCommand.isNullOrBlank() -> {
+                // shell_command is documented as going to `bash -c`, so an interpreter that is
+                // not a shell does not apply to it -- python3 -c "ping 8.8.8.8" is not what was
+                // asked for. Scripts for other interpreters go through `script`, over stdin.
+                val shell = KNOWN_SHELLS.firstOrNull { it == command.lowercase() } ?: "bash"
+                android.util.Log.d("TermuxShellTool", "Executing: cmd=$shell args=-c $shellCommand workdir=$workdir timeout=${timeoutSeconds}s")
+                executeCommand(shell, "-c $shellCommand", null, workdir, timeoutSeconds)
+            }
+            !script.isNullOrBlank() -> {
+                android.util.Log.d("TermuxShellTool", "Executing: cmd=$command script=${script.length} chars workdir=$workdir timeout=${timeoutSeconds}s")
+                executeCommand(command, "", script, workdir, timeoutSeconds)
+            }
+            // Returned rather than thrown, so the model reads the same sentence whichever
+            // path invoked it.
+            else -> "Error: Missing 'shell_command'. Pass the command to run, e.g. " +
+                "{\"shell_command\": \"ping -c 4 8.8.8.8\"}."
+        }
+    }
+
+    private fun executeCommand(
         command: String,
         argumentsStr: String,
         script: String?,

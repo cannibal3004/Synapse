@@ -58,14 +58,10 @@ class ToolExecutor @Inject constructor(
                     val category = args["category"] as? String ?: "all"
                     deviceInfoTool.getDeviceInfo(category)
                 }
-                "termux_shell" -> {
-                    val command = args["command"] as? String ?: ""
-                    val arguments = args["arguments"] as? String ?: ""
-                    val script = args["script"] as? String
-                    val workdir = args["workdir"] as? String
-                    val timeout = (args["timeout"] as? Number)?.toInt() ?: 30
-                    termuxShellTool.executeCommand(command, arguments, script, workdir, timeout)
-                }
+                // Handed the raw JSON: this tool's parameters are its own business, and
+                // restating them here is what broke it -- the copy read `arguments`, a name the
+                // schema does not define, so no command ever reached Termux.
+                "termux_shell" -> termuxShellTool.execute(arguments)
                 "remember_fact" -> rememberFactTool.execute(arguments)
                 "recall_facts" -> recallFactsTool.execute(arguments)
                 else -> "Error: Unknown tool '$name'"
