@@ -94,13 +94,18 @@ class SettingsViewModel @Inject constructor(
         maxToolRounds: Int?
     ) {
         viewModelScope.launch {
-            apiKey?.let { settingsRepository.saveApiKey(it) }
-            apiBaseUrl?.let { settingsRepository.saveApiBaseUrl(it) }
-            defaultModel?.let { settingsRepository.saveDefaultModel(it) }
-            systemPrompt?.let { settingsRepository.saveSystemPrompt(it) }
-            embeddingModel?.let { settingsRepository.saveEmbeddingModel(it) }
-            exaApiKey?.let { settingsRepository.saveExaApiKey(it) }
-            maxToolRounds?.let { settingsRepository.saveMaxToolRounds(it) }
+            // Nulls are passed through rather than skipped. Each one used to mean "leave
+            // this key alone", which is indistinguishable from "the user cleared this field"
+            // -- so emptying a box and saving put the old value straight back.
+            settingsRepository.saveAll(
+                apiKey = apiKey,
+                apiBaseUrl = apiBaseUrl,
+                defaultModel = defaultModel,
+                systemPrompt = systemPrompt,
+                embeddingModel = embeddingModel,
+                exaApiKey = exaApiKey,
+                maxToolRounds = maxToolRounds
+            )
 
             sharedPreferences.edit().apply {
                 if (exaApiKey != null) {
