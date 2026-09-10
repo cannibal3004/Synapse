@@ -39,7 +39,8 @@ class MessageRepositoryImpl(
             role = role,
             content = content,
             timestamp = System.currentTimeMillis(),
-            activity = activity?.takeIf { it.isNotEmpty() }?.let { activityGson.toJson(it) }
+            activity = activity?.takeIf { it.isNotEmpty() }
+                ?.let { activityGson.toJson(it, TURN_ACTIVITY_LIST_TYPE) }
         )
         messageDao.insertMessage(entity)
         return id
@@ -101,15 +102,27 @@ class MessageRepositoryImpl(
             toolResults = toolResults?.let { gson.fromJson(it, Array<com.aiassistant.domain.model.ToolResult>::class.java) }?.toList(),
             activity = activity?.let {
                 runCatching {
-                    activityGson.fromJson(
+                    activityGson.fromJson<List<com.aiassistant.domain.model.TurnActivity>>(
                         it,
-                        object : TypeToken<List<com.aiassistant.domain.model.TurnActivity>>() {}.type
-                    ) as List<com.aiassistant.domain.model.TurnActivity>
+                        TURN_ACTIVITY_LIST_TYPE
+                    )
                 }.getOrNull()
             }
         )
     }
 }
+
+/**
+ * The declared type of a stored activity list.
+ *
+ * Both directions have to name it. Handing Gson a bare list makes it serialise each element by
+ * its *runtime* class, which is the concrete Thought or ToolRun and never consults the adapter
+ * registered against the interface -- so rows were written with no `kind` at all, and a ToolRun
+ * came back as a Thought with empty text. That is what left blank gaps where the pills had been
+ * once a turn was reloaded from the database.
+ */
+private val TURN_ACTIVITY_LIST_TYPE: java.lang.reflect.Type =
+    object : TypeToken<List<com.aiassistant.domain.model.TurnActivity>>() {}.type
 
 /**
  * TurnActivity is a sealed interface, so Gson needs to be told which subtype a row holds.
@@ -152,7 +165,12 @@ private class TurnActivitySerializer :
         context: com.google.gson.JsonDeserializationContext
     ): com.aiassistant.domain.model.TurnActivity {
         val obj = json.asJsonObject
-        return when (obj.get("kind")?.asString) {
+        // Rows written before the discriminator existed carry no `kind`, so fall back to the
+        // shape: only a tool run has a name. Without this those turns still read back as empty
+        // thoughts, and the history already on the device would keep its gaps.
+        val kind = obj.get("kind")?.asString
+            ?: if (obj.has("name")) "tool" else "thought"
+        return when (kind) {
             "tool" -> com.aiassistant.domain.model.TurnActivity.ToolRun(
                 name = obj.get("name")?.asString.orEmpty(),
                 arguments = obj.get("arguments")?.asString.orEmpty()

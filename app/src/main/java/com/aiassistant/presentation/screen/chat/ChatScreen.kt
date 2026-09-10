@@ -794,7 +794,15 @@ private const val SCROLL_TO_END_OFFSET = 1_000_000
 @Composable
 private fun ActivityRow(activity: List<TurnActivity>, running: Boolean) {
     var expanded by remember { mutableStateOf(false) }
-    val canExpand = activity.isNotEmpty()
+    // A thought with nothing in it is not a step: it costs a blank line when expanded and an
+    // empty caption when not. Drop those, and if that leaves nothing to say, draw nothing at
+    // all rather than a chevron with a gap beside it.
+    val steps = remember(activity) {
+        activity.filterNot { it is TurnActivity.Thought && it.text.isBlank() }
+    }
+    if (steps.isEmpty() && !running) return
+
+    val canExpand = steps.isNotEmpty()
 
     Column(
         modifier = Modifier
@@ -809,7 +817,7 @@ private fun ActivityRow(activity: List<TurnActivity>, running: Boolean) {
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.width(4.dp))
-            ActivitySummary(activity = activity, running = running, expanded = expanded)
+            ActivitySummary(activity = steps, running = running, expanded = expanded)
         }
 
         if (expanded) {
@@ -818,7 +826,7 @@ private fun ActivityRow(activity: List<TurnActivity>, running: Boolean) {
                 modifier = Modifier.padding(start = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                activity.forEach { step ->
+                steps.forEach { step ->
                     when (step) {
                         is TurnActivity.Thought -> Text(
                             text = step.text.trim(),
