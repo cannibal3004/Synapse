@@ -19,12 +19,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.aiassistant.domain.llm.LlmBackend
 import com.aiassistant.domain.llm.OnDeviceEmbeddingEngine
 import com.aiassistant.domain.llm.OnDeviceLlmSettings
 import com.aiassistant.presentation.vm.SettingsViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,7 +43,14 @@ fun SettingsScreen(
     var embeddingModel by remember { mutableStateOf(settings.embeddingModel ?: "text-embedding-3-small") }
     var exaApiKey by remember { mutableStateOf(settings.exaApiKey ?: "") }
     var maxToolRounds by remember { mutableStateOf(settings.maxToolRounds.toString()) }
-    var showSaveToast by remember { mutableStateOf(false) }
+
+    // The confirmation used to be a Snackbar composed inline at the end of the scrolling
+    // column, below the save button, so it only existed off-screen: you saved, nothing
+    // appeared, and it had already timed out by the time you scrolled to where it was.
+    // The Scaffold's host floats it over the content instead.
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
 
     var onDeviceEnabled by remember { mutableStateOf(settings.onDeviceSettings?.enabled ?: false) }
     var onDeviceModelName by remember { mutableStateOf(settings.onDeviceSettings?.modelName ?: "gemma-4-E2B-it.litertlm") }
@@ -107,12 +116,24 @@ fun SettingsScreen(
                     }
                 }
             )
+        },
+        snackbarHost = {
+            // imePadding so the confirmation clears an open keyboard. Saving drops focus, but
+            // the keyboard animates out over a couple of frames and the snackbar is instant.
+            SnackbarHost(snackbarHostState, modifier = Modifier.imePadding())
         }
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
+                // Top from the Scaffold; the bottom resolved against the keyboard the same way
+                // the chat input does it. safeDrawing takes whichever of the navigation bar and
+                // the IME is larger, and applying it *outside* verticalScroll is the part that
+                // matters: it shrinks the scroll viewport rather than padding the content, so a
+                // field taking focus scrolls itself above the keyboard instead of being buried
+                // under it. Pairs with android:windowSoftInputMode="adjustResize".
+                .padding(top = paddingValues.calculateTopPadding())
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
@@ -510,33 +531,26 @@ fun SettingsScreen(
                             embeddingHuggingfaceRepo = onDeviceEmbeddingRepo
                         )
                     )
-                    showSaveToast = true
+
+                    // Nothing left to type, and it gets the keyboard out of the way of the
+                    // confirmation.
+                    focusManager.clearFocus()
+                    scope.launch {
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                        snackbarHostState.showSnackbar(
+                            message = "Settings saved",
+                            withDismissAction = true,
+                            duration = SnackbarDuration.Short
+                        )
+                    }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Save Settings")
             }
 
-            if (showSaveToast) {
-                LaunchedEffect(Unit) {
-                    kotlinx.coroutines.delay(2000)
-                    showSaveToast = false
-                }
-                Snackbar(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    action = {
-                        TextButton(onClick = { showSaveToast = false }) {
-                            Text("Dismiss")
-                        }
-                    }
-                ) {
-                    Text("Settings saved successfully!")
-                }
-            }
+            // Room to scroll the save button clear of the snackbar that covers it.
+            Spacer(modifier = Modifier.height(72.dp))
         }
     }
 }
