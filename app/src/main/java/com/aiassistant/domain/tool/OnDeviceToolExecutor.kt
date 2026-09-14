@@ -540,6 +540,8 @@ class OnDeviceToolExecutor(
     // The same class the hosted path uses. This process gets its own instance -- the
     // engine runs in :llm -- but not its own copy of the code.
     private val termuxShellTool = TermuxShellTool(context)
+    private val calendarTool = CalendarTool(context)
+    private val smsTool = SmsTool(context)
     private val memoryTools: List<OpenApiTool> = memory?.let {
         listOf(
             RememberFactTool(it, conversationIdProvider),
@@ -552,6 +554,8 @@ class OnDeviceToolExecutor(
         weatherTool,
         webPageFetcherTool,
         deviceInfoTool,
-        termuxShellTool
+        termuxShellTool,
+        calendarTool,
+        smsTool
     ) + memoryTools
 }

@@ -11,6 +11,8 @@ class ToolExecutor @Inject constructor(
     private val webPageFetcherTool: WebPageFetcherTool,
     private val deviceInfoTool: DeviceInfoTool,
     private val termuxShellTool: TermuxShellTool,
+    private val calendarTool: CalendarTool,
+    private val smsTool: SmsTool,
     memory: MemorySearchUseCase,
     activeConversation: ActiveConversation,
     taskRepository: com.aiassistant.domain.repository.TaskRepository,
@@ -56,6 +58,8 @@ class ToolExecutor @Inject constructor(
                 // restating them here is what broke it -- the copy read `arguments`, a name the
                 // schema does not define, so no command ever reached Termux.
                 "termux_shell" -> termuxShellTool.execute(arguments)
+                "calendar" -> calendarTool.execute(arguments)
+                "sms" -> smsTool.execute(arguments)
                 "manage_tasks" -> scheduledTaskTool.execute(arguments)
                 "remember_fact" -> rememberFactTool.execute(arguments)
                 "recall_facts" -> recallFactsTool.execute(arguments)

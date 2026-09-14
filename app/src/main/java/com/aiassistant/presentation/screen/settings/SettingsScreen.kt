@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import com.google.accompanist.permissions.isGranted
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.aiassistant.domain.llm.LlmBackend
@@ -447,6 +448,10 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
+            PhoneAccessCard()
+
+            Spacer(modifier = Modifier.height(32.dp))
+
             val termuxStatus by viewModel.termuxStatus.collectAsState()
             val context = LocalContext.current
             val settingsLauncher = rememberLauncherForActivityResult(
@@ -567,6 +572,81 @@ fun SettingsScreen(
 
             // Room to scroll the save button clear of the snackbar that covers it.
             Spacer(modifier = Modifier.height(72.dp))
+        }
+    }
+}
+
+/**
+ * Grants the calendar and messaging permissions the tools need.
+ *
+ * The tools themselves cannot ask: they run on a background thread with no activity to attach a
+ * dialog to, so they report the refusal and point here. This is the "here".
+ */
+@OptIn(com.google.accompanist.permissions.ExperimentalPermissionsApi::class)
+@Composable
+private fun PhoneAccessCard() {
+    val permissions = com.google.accompanist.permissions.rememberMultiplePermissionsState(
+        listOf(
+            android.Manifest.permission.READ_CALENDAR,
+            android.Manifest.permission.WRITE_CALENDAR,
+            android.Manifest.permission.READ_SMS,
+            android.Manifest.permission.SEND_SMS,
+            android.Manifest.permission.READ_CONTACTS
+        )
+    )
+    val granted = permissions.permissions.count { it.status.isGranted }
+    val total = permissions.permissions.size
+
+    Text(
+        text = "Phone access",
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(bottom = 16.dp)
+    )
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Calendar and messages", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = if (granted == total) "Granted" else "$granted of $total",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (granted == total) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Lets the assistant read your calendar and add events, and read and send " +
+                    "texts. Nothing is read until you grant these, and it will always show you a " +
+                    "message before sending it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+
+            if (granted < total) {
+                Button(
+                    onClick = { permissions.launchMultiplePermissionRequest() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Lock, null, modifier = Modifier.padding(end = 8.dp))
+                    Text("Grant access")
+                }
+                if (permissions.shouldShowRationale) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "If a permission keeps being refused, Android stops asking. " +
+                            "Open App Settings below and grant it there instead.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }

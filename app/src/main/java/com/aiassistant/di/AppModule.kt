@@ -126,6 +126,16 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideCalendarTool(@ApplicationContext context: Context) =
+        com.aiassistant.domain.tool.CalendarTool(context)
+
+    @Provides
+    @Singleton
+    fun provideSmsTool(@ApplicationContext context: Context) =
+        com.aiassistant.domain.tool.SmsTool(context)
+
+    @Provides
+    @Singleton
     fun provideVectorMathService() = VectorMathService()
 
     @Provides
