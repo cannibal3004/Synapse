@@ -30,6 +30,8 @@ import com.aiassistant.presentation.screen.conversation.ConversationListScreen
 import com.aiassistant.presentation.screen.settings.SettingsScreen
 import com.aiassistant.presentation.screen.tasks.TaskScreen
 import com.aiassistant.presentation.vm.ConversationListViewModel
+import com.aiassistant.presentation.component.StopReplyDialog
+import com.aiassistant.presentation.vm.ShellViewModel
 
 /**
  * Width at which the app stops being a phone and becomes a desktop.
@@ -47,7 +49,8 @@ private val SIDEBAR_WIDTH = 280.dp
 fun AppNavigation(
     modifier: Modifier = Modifier,
     deepLinkType: String? = null,
-    deepLinkId: String? = null
+    deepLinkId: String? = null,
+    shellViewModel: ShellViewModel = hiltViewModel()
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val navController = rememberNavController()
@@ -75,8 +78,32 @@ fun AppNavigation(
     // while the list happens to be open.
     LaunchedEffect(desktop, currentRoute) {
         if (desktop && currentRoute == "conversationList") {
-            navController.navigateTopLevel("chat/new")
+            navController.navigateTopLevel("chat/new", desktop)
         }
+    }
+
+    // Leaving a conversation abandons whatever it is still generating, so anything that would
+    // change the pane asks first. The pending action is kept rather than a bare flag: the dialog
+    // has to know where you were going in order to take you there once you confirm.
+    //
+    // The list screen is not gated. Reaching it already meant leaving the chat, so by the time
+    // its rows are tappable there is nothing left running.
+    val replyingTo by shellViewModel.replyingTo.collectAsState()
+    var pendingNavigation by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    val leaveConversation: (() -> Unit) -> Unit = { action ->
+        if (replyingTo != null) pendingNavigation = action else action()
+    }
+
+    pendingNavigation?.let { action ->
+        StopReplyDialog(
+            conversationTitle = replyingTo,
+            onDismiss = { pendingNavigation = null },
+            onConfirm = {
+                pendingNavigation = null
+                action()
+            }
+        )
     }
 
     val sidebar = @Composable {
@@ -87,12 +114,16 @@ fun AppNavigation(
             currentRoute = currentRoute,
             openConversationId = openConversationId,
             onNavigate = { route ->
-                navController.navigateTopLevel(route)
-                if (!desktop) scope.launch { drawerState.close() }
+                leaveConversation {
+                    navController.navigateTopLevel(route, desktop)
+                    if (!desktop) scope.launch { drawerState.close() }
+                }
             },
             onOpenConversation = { id ->
-                navController.navigateTopLevel("chat/$id")
-                if (!desktop) scope.launch { drawerState.close() }
+                leaveConversation {
+                    navController.navigateTopLevel("chat/$id", desktop)
+                    if (!desktop) scope.launch { drawerState.close() }
+                }
             }
         )
     }
@@ -145,9 +176,20 @@ fun AppNavigation(
  * on, opening a second conversation restored the first one's arguments and the pane never
  * changed.
  */
-private fun NavHostController.navigateTopLevel(route: String) {
+private fun NavHostController.navigateTopLevel(route: String, desktop: Boolean) {
     navigate(route) {
-        popUpTo(graph.startDestinationId) { inclusive = true }
+        if (desktop) {
+            // Nothing behind the pane, so Back closes the window. Popping the graph rather than
+            // the start destination matters: once the start destination has been popped it is no
+            // longer on the stack, popUpTo finds nothing to pop, and every later navigation
+            // stacks another entry -- each with a live ChatViewModel, and a reply still running
+            // in the one you thought you had left.
+            popUpTo(graph.id) { inclusive = true }
+        } else {
+            // The list stays underneath, so Back returns to it. Non-inclusive, so it is always
+            // there to be found.
+            popUpTo(graph.startDestinationId) { inclusive = false }
+        }
         // Single-top for the fixed destinations, so re-clicking Settings does not throw away a
         // form you were halfway through filling in.
         //

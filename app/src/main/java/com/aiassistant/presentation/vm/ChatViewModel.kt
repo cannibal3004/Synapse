@@ -10,6 +10,7 @@ import com.aiassistant.data.llm.OnDeviceLlmSettingsManager
 import com.aiassistant.data.model.api.ChatMessage as ApiChatMessage
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.service.ActiveConversation
+import com.aiassistant.domain.service.ActiveTurn
 import com.aiassistant.domain.tool.formatMemoryContext
 import com.aiassistant.data.model.api.StreamEvent
 import com.aiassistant.domain.model.TurnActivity
@@ -83,6 +84,7 @@ class ChatViewModel @Inject constructor(
     private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
     private val memorySearchUseCase: MemorySearchUseCase,
     private val activeConversation: ActiveConversation,
+    private val activeTurn: ActiveTurn,
     @ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
 
@@ -167,7 +169,7 @@ class ChatViewModel @Inject constructor(
      * outlives its conversation goes on writing its stream, its activity row and finally its
      * whole transcript into whatever is on screen by then.
      */
-    private var activeTurn: Job? = null
+    private var turnJob: Job? = null
 
     /**
      * Abandons the turn in flight.
@@ -179,8 +181,11 @@ class ChatViewModel @Inject constructor(
      * also what a crash mid-reply leaves behind.
      */
     private fun cancelActiveTurn() {
-        activeTurn?.cancel()
-        activeTurn = null
+        turnJob?.cancel()
+        turnJob = null
+        // Not only in the coroutine's finally: a job cancelled before its body was ever
+        // dispatched has no finally to run, and the flag would stay set for good.
+        activeTurn.end(this)
     }
 
     fun createNewConversation(
@@ -320,7 +325,15 @@ class ChatViewModel @Inject constructor(
             return
         }
 
-        activeTurn = viewModelScope.launch {
+        // A conversation on its first message has no title yet -- one is generated from that
+        // message a moment later, inside the turn. Generate it here too rather than let the
+        // dialog fall back to "this conversation" for exactly the case where the user is most
+        // likely to be starting another chat.
+        activeTurn.begin(
+            this,
+            _uiState.value.conversationTitle.ifBlank { generateTitleFromMessage(userMessage) }
+        )
+        turnJob = viewModelScope.launch {
             val tempConversationId = _uiState.value.conversationId ?: "temp_new_${System.currentTimeMillis()}"
             val userMsg = ChatMessage(
                 id = "temp_${System.currentTimeMillis()}",
@@ -403,6 +416,10 @@ class ChatViewModel @Inject constructor(
                     error = "Error: ${e.message}",
                     streamingResponse = null
                 )
+            } finally {
+                // Runs on cancellation too, which is the case that matters: a flag left set
+                // would have the shell asking about a reply that stopped long ago.
+                activeTurn.end(this@ChatViewModel)
             }
         }
     }
@@ -793,12 +810,18 @@ class ChatViewModel @Inject constructor(
 
     fun clearMessages() {
         val currentConversationId = _uiState.value.conversationId ?: return
+        // A reply still running would write itself straight back into the transcript that was
+        // just emptied, and reload the deleted messages along with it.
+        cancelActiveTurn()
         viewModelScope.launch {
             try {
                 messageRepository.deleteMessages(currentConversationId)
                 _uiState.value = _uiState.value.copy(
                     messages = emptyList(),
-                    error = null
+                    error = null,
+                    isLoading = false,
+                    streamingResponse = null,
+                    activity = emptyList()
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(

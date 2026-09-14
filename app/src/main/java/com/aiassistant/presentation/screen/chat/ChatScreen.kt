@@ -56,6 +56,7 @@ import com.aiassistant.domain.model.ToolCall
 import com.aiassistant.presentation.vm.ChatViewModel
 import com.aiassistant.presentation.vm.ChatUiState
 import com.aiassistant.domain.model.TurnActivity
+import com.aiassistant.presentation.component.StopReplyDialog
 import com.google.gson.JsonParser
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberPermissionState
@@ -280,6 +281,24 @@ fun ChatScreen(
         filePickerLauncher.launch("*/*")
     }
 
+    // Clearing the chat and starting a new one both abandon a reply in progress, the same way
+    // the sidebar does. Same question, asked from here because this menu does not navigate.
+    var pendingInterrupt by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val confirmIfReplying: (() -> Unit) -> Unit = { action ->
+        if (uiState.isLoading) pendingInterrupt = action else action()
+    }
+
+    pendingInterrupt?.let { action ->
+        StopReplyDialog(
+            conversationTitle = uiState.conversationTitle,
+            onDismiss = { pendingInterrupt = null },
+            onConfirm = {
+                pendingInterrupt = null
+                action()
+            }
+        )
+    }
+
     LaunchedEffect(conversationId) {
         if (conversationId == "new") {
             viewModel.createNewConversation(persistToDb = false)
@@ -321,8 +340,8 @@ fun ChatScreen(
                             DropdownMenuItem(
                                 text = { Text("Clear chat") },
                                 onClick = {
-                                    viewModel.clearMessages()
                                     showMoreMenu = false
+                                    confirmIfReplying { viewModel.clearMessages() }
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Default.Clear, "Clear")
@@ -341,8 +360,8 @@ fun ChatScreen(
                             DropdownMenuItem(
                                 text = { Text("New conversation") },
                                 onClick = {
-                                    viewModel.createNewConversation()
                                     showMoreMenu = false
+                                    confirmIfReplying { viewModel.createNewConversation() }
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Default.Add, "New")
