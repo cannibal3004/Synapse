@@ -12,8 +12,6 @@ import com.aiassistant.domain.repository.MemoryRepository
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.repository.TaskRepository
 import com.aiassistant.domain.service.VectorMathService
-import com.aiassistant.domain.tool.CalculatorTool
-import com.aiassistant.domain.tool.CodeInterpreterTool
 import com.aiassistant.domain.tool.DeviceInfoTool
 import com.aiassistant.domain.tool.TermuxShellTool
 import com.aiassistant.domain.tool.ToolExecutor
@@ -110,19 +108,11 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideCalculatorTool() = CalculatorTool()
-
-    @Provides
-    @Singleton
     fun provideWeatherTool() = WeatherTool()
 
     @Provides
     @Singleton
     fun provideWebPageFetcherTool() = WebPageFetcherTool()
-
-    @Provides
-    @Singleton
-    fun provideCodeInterpreterTool() = CodeInterpreterTool()
 
     @Provides
     @Singleton

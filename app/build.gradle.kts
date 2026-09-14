@@ -118,7 +118,7 @@ dependencies {
     implementation(libs.jsoup)
 
     // JavaScript engine (code interpreter tool)
-    implementation(libs.rhino)
+
 
     // Markdown
     implementation(libs.commonmark)

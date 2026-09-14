@@ -27,7 +27,6 @@ material = "1.14.0"
 navigation-compose = "2.10.0"
 okhttp = "5.5.0"
 retrofit = "3.0.0"
-rhino = "1.9.1"
 room = "2.8.4"
 work = "2.11.2"
 
@@ -97,7 +96,6 @@ coil-network-okhttp = { module = "io.coil-kt.coil3:coil-network-okhttp", version
 commonmark = { module = "org.commonmark:commonmark", version.ref = "commonmark" }
 commonmark-ext-gfm-tables = { module = "org.commonmark:commonmark-ext-gfm-tables", version.ref = "commonmark" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
-rhino = { module = "org.mozilla:rhino", version.ref = "rhino" }
 accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanist" }
 
 # Testing

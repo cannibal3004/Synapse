@@ -1236,10 +1236,8 @@ private const val TOOL_ARGUMENT_MAX_CHARS = 400
 @Composable
 private fun getToolIcon(name: String) = when (name) {
     "web_search" -> Icons.Default.Search
-    "calculator" -> Icons.Default.Calculate
     "weather" -> Icons.Default.Thunderstorm
     "web_fetch" -> Icons.Default.Language
-    "code_interpreter" -> Icons.Default.Code
     "device_info" -> Icons.Default.Info
     else -> Icons.Default.Build
 }

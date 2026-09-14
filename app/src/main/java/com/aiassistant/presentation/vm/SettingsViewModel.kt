@@ -35,11 +35,10 @@ data class SettingsUiState(
 
 const val DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant with access to tools. You can:
 - Search the web using 'web_search' tool
-- Calculate math using 'calculator' tool
 - Get weather using 'weather' tool
 - Fetch web pages using 'web_fetch' tool
-- Run JavaScript using 'code_interpreter' tool
 - Get device info using 'device_info' tool
+- Run any shell command, script or calculation using 'termux_shell' tool
 
 Current date and time: [CURRENT_DATE_TIME]
 
