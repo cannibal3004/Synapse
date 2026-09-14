@@ -542,6 +542,7 @@ class OnDeviceToolExecutor(
     private val termuxShellTool = TermuxShellTool(context)
     private val calendarTool = CalendarTool(context)
     private val smsTool = SmsTool(context)
+    private val saveFileTool = SaveFileTool(context)
     private val memoryTools: List<OpenApiTool> = memory?.let {
         listOf(
             RememberFactTool(it, conversationIdProvider),
@@ -556,6 +557,7 @@ class OnDeviceToolExecutor(
         deviceInfoTool,
         termuxShellTool,
         calendarTool,
-        smsTool
+        smsTool,
+        saveFileTool
     ) + memoryTools
 }

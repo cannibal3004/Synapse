@@ -13,6 +13,7 @@ class ToolExecutor @Inject constructor(
     private val termuxShellTool: TermuxShellTool,
     private val calendarTool: CalendarTool,
     private val smsTool: SmsTool,
+    private val saveFileTool: SaveFileTool,
     memory: MemorySearchUseCase,
     activeConversation: ActiveConversation,
     taskRepository: com.aiassistant.domain.repository.TaskRepository,
@@ -60,6 +61,7 @@ class ToolExecutor @Inject constructor(
                 "termux_shell" -> termuxShellTool.execute(arguments)
                 "calendar" -> calendarTool.execute(arguments)
                 "sms" -> smsTool.execute(arguments)
+                "save_file" -> saveFileTool.execute(arguments)
                 "manage_tasks" -> scheduledTaskTool.execute(arguments)
                 "remember_fact" -> rememberFactTool.execute(arguments)
                 "recall_facts" -> recallFactsTool.execute(arguments)

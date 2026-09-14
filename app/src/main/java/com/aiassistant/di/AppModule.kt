@@ -136,6 +136,11 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideSaveFileTool(@ApplicationContext context: Context) =
+        com.aiassistant.domain.tool.SaveFileTool(context)
+
+    @Provides
+    @Singleton
     fun provideVectorMathService() = VectorMathService()
 
     @Provides
