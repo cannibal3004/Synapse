@@ -603,7 +603,7 @@ class ChatViewModel @Inject constructor(
                     )
                 }
 
-                recordToolRuns(domainToolCalls)
+                val runsStartAt = recordToolRuns(domainToolCalls)
 
                 val toolResults = withContext(Dispatchers.IO) {
                     domainToolCalls.map { toolCall ->
@@ -615,6 +615,8 @@ class ChatViewModel @Inject constructor(
                         )
                     }
                 }
+
+                recordToolResults(runsStartAt, toolResults)
 
                 // The assistant turn that asked for the calls has to precede their results.
                 // The protocol pairs every tool message with the tool_calls that produced it, and
@@ -664,11 +666,34 @@ class ChatViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(activity = updated)
     }
 
-    private fun recordToolRuns(calls: List<com.aiassistant.domain.model.ToolCall>) {
+    /** Returns where this round's runs start, so their results can be filled in after. */
+    private fun recordToolRuns(calls: List<com.aiassistant.domain.model.ToolCall>): Int {
+        val startIndex = _uiState.value.activity.size
         _uiState.value = _uiState.value.copy(
             activity = _uiState.value.activity +
                 calls.map { TurnActivity.ToolRun(it.name, it.arguments) }
         )
+        return startIndex
+    }
+
+    /**
+     * Attaches each result to the run that produced it.
+     *
+     * By index rather than by name: two calls to the same tool in one round are ordinary, and
+     * matching on name would pair them up wrongly. Nothing is appended to the activity between
+     * the runs going in and the results coming back, so the offsets still line up.
+     */
+    private fun recordToolResults(
+        startIndex: Int,
+        results: List<com.aiassistant.domain.model.ToolResult>
+    ) {
+        val activity = _uiState.value.activity.toMutableList()
+        results.forEachIndexed { offset, result ->
+            val run = activity.getOrNull(startIndex + offset) as? TurnActivity.ToolRun
+                ?: return@forEachIndexed
+            activity[startIndex + offset] = run.copy(result = result.result)
+        }
+        _uiState.value = _uiState.value.copy(activity = activity)
     }
 
     private suspend fun memoryContextFor(query: String): String? {

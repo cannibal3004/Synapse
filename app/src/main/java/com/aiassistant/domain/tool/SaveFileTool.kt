@@ -135,8 +135,10 @@ class SaveFileTool @Inject constructor(
             uri, arrayOf(MediaStore.Downloads.DISPLAY_NAME), null, null, null
         )?.use { if (it.moveToFirst()) it.getString(0) else null } ?: name
 
-        return "Saved ${bytes.size} bytes to Downloads/$SUBFOLDER/$actual. " +
-            "The user can open it from their Files app."
+        // The uri is here for the transcript, which turns it into a button. The model has no
+        // use for it beyond knowing the save worked.
+        return "Saved ${bytes.size} bytes to Downloads/$SUBFOLDER/$actual ($uri). " +
+            "The user has a button to open it, so there is no need to repeat the path."
     }
 
     private fun saveToAppDirectory(name: String, content: String): String {

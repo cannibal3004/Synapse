@@ -813,6 +813,9 @@ private fun MessageGroupRow(group: MessageGroup) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             ActivityRow(activity = activity, running = false)
             MessageBubble(message)
+            // Below the reply rather than inside the activity row, which is collapsed by
+            // default -- a file you cannot see is barely better than one you cannot open.
+            SavedFileChips(activity)
         }
     }
 }
@@ -826,6 +829,93 @@ private fun MessageGroupRow(group: MessageGroup) {
  * unaffected.
  */
 private val READABLE_WIDTH = 760.dp
+
+/**
+ * Files this turn wrote, as buttons that open them.
+ *
+ * The tool puts the file in shared Downloads and reports its content uri; without this the user
+ * would have to go and find it in a file manager, which rather wastes the point of writing a
+ * file at all.
+ */
+@Composable
+private fun SavedFileChips(activity: List<TurnActivity>) {
+    val files = remember(activity) {
+        activity.filterIsInstance<TurnActivity.ToolRun>()
+            .filter { it.name == "save_file" }
+            .mapNotNull { run -> run.result?.let(::parseSavedFile) }
+    }
+    if (files.isEmpty()) return
+
+    val context = LocalContext.current
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        files.forEach { file ->
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.clickable { openSavedFile(context, file) }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.InsertDriveFile,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            text = file.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Tap to open",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class SavedFile(val name: String, val uri: String)
+
+/**
+ * Pulls the file out of what save_file reported.
+ *
+ * Reading the result rather than the arguments, because MediaStore renames on collision: the
+ * name asked for and the name on disk are not always the same, and the uri only exists here.
+ */
+private fun parseSavedFile(result: String): SavedFile? {
+    val uri = Regex("""content://[^\s)]+""").find(result)?.value ?: return null
+    val name = Regex("""to (\S+) \(content://""").find(result)
+        ?.groupValues?.get(1)?.substringAfterLast('/')
+        ?: uri.substringAfterLast('/')
+    return SavedFile(name = name, uri = uri)
+}
+
+private fun openSavedFile(context: android.content.Context, file: SavedFile) {
+    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+        setDataAndType(android.net.Uri.parse(file.uri), context.contentResolver.getType(android.net.Uri.parse(file.uri)))
+        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { context.startActivity(intent) }.onFailure {
+        // A csv on a device with nothing that opens csv files is a real outcome, not a bug.
+        android.widget.Toast.makeText(
+            context,
+            "Nothing on this device opens ${file.name}. It is in Downloads/Synapse.",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
+}
 
 /** Slack when deciding "at the bottom", so a pixel of rounding does not stop the follow. */
 private const val AUTOSCROLL_SLACK_PX = 64

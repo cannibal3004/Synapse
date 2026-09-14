@@ -154,6 +154,7 @@ private class TurnActivitySerializer :
                 obj.addProperty("kind", "tool")
                 obj.addProperty("name", src.name)
                 obj.addProperty("arguments", src.arguments)
+                src.result?.let { obj.addProperty("result", it) }
             }
         }
         return obj
@@ -173,7 +174,8 @@ private class TurnActivitySerializer :
         return when (kind) {
             "tool" -> com.aiassistant.domain.model.TurnActivity.ToolRun(
                 name = obj.get("name")?.asString.orEmpty(),
-                arguments = obj.get("arguments")?.asString.orEmpty()
+                arguments = obj.get("arguments")?.asString.orEmpty(),
+                result = obj.get("result")?.takeIf { !it.isJsonNull }?.asString
             )
             else -> com.aiassistant.domain.model.TurnActivity.Thought(
                 text = obj.get("text")?.asString.orEmpty()

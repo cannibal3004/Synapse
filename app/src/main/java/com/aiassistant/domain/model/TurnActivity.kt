@@ -14,6 +14,15 @@ sealed interface TurnActivity : Parcelable {
     @Parcelize
     data class Thought(val text: String) : TurnActivity
 
+    /**
+     * [result] is filled in once the tool returns, so it is null while the call is in flight and
+     * on any turn recorded before results were kept. The transcript uses it to offer a saved
+     * file for opening; nothing else reads it.
+     */
     @Parcelize
-    data class ToolRun(val name: String, val arguments: String) : TurnActivity
+    data class ToolRun(
+        val name: String,
+        val arguments: String,
+        val result: String? = null
+    ) : TurnActivity
 }
