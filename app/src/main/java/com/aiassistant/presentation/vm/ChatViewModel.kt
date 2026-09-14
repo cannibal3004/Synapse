@@ -119,10 +119,13 @@ class ChatViewModel @Inject constructor(
         if (!next) speaker.stop()
     }
 
-    fun startDictation() {
+    /**
+     * @param continuous true while the microphone button is held, so pauses do not end it.
+     */
+    fun startDictation(continuous: Boolean) {
         // Barge-in: talking over the reply is the thing people do, and expect to work.
         speaker.stop()
-        dictation.start()
+        dictation.start(continuous)
     }
 
     fun stopDictation() = dictation.stop()

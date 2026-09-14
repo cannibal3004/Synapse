@@ -13,6 +13,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,6 +32,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
@@ -580,16 +586,25 @@ fun ChatScreen(
                     input = userInput,
                     onInputChange = { userInput = it },
                     isListening = dictationState.listening,
-                    onMicClick = {
+                    onMicTap = {
                         if (dictationState.listening) {
                             viewModel.stopDictation()
                         } else if (micPermission.status.isGranted) {
                             dictationPrefix = userInput
-                            viewModel.startDictation()
+                            viewModel.startDictation(continuous = false)
                         } else {
                             micPermission.launchPermissionRequest()
                         }
                     },
+                    onMicHoldStart = {
+                        if (micPermission.status.isGranted) {
+                            dictationPrefix = userInput
+                            viewModel.startDictation(continuous = true)
+                        } else {
+                            micPermission.launchPermissionRequest()
+                        }
+                    },
+                    onMicHoldEnd = { viewModel.stopDictation() },
                     onSend = {
                         if (userInput.isNotBlank() || uiState.pendingAttachments.isNotEmpty()) {
                             viewModel.stopDictation()
@@ -878,6 +893,65 @@ private fun MessageGroupRow(group: MessageGroup) {
  * unaffected.
  */
 private val READABLE_WIDTH = 760.dp
+
+/**
+ * Tap for one sentence, hold for as long as you keep talking.
+ *
+ * Two gestures because of the earcons the recognition service plays on every utterance: a
+ * session that restarts on each pause beeps constantly, which is only worth putting up with
+ * while a finger is on the button and the end is in sight. A tap therefore takes a single
+ * utterance, and a hold runs until release.
+ *
+ * detectTapGestures rather than combinedClickable: a long click reports that the press became
+ * long, never that it ended, and the release is the whole point here.
+ */
+@Composable
+private fun MicButton(
+    isListening: Boolean,
+    enabled: Boolean,
+    onTap: () -> Unit,
+    onHoldStart: () -> Unit,
+    onHoldEnd: () -> Unit
+) {
+    var holding by remember { mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
+
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures(
+                    onLongPress = {
+                        // The buzz is what tells you a hold registered; without it you cannot
+                        // tell a hold that started from a tap that has not fired yet.
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        holding = true
+                        onHoldStart()
+                    },
+                    onPress = {
+                        tryAwaitRelease()
+                        if (holding) {
+                            holding = false
+                            onHoldEnd()
+                        }
+                    },
+                    onTap = { onTap() }
+                )
+            }
+            .semantics {
+                contentDescription = if (isListening) "Stop dictating" else "Dictate"
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = if (isListening) Icons.Default.Mic else Icons.Default.MicNone,
+            contentDescription = null,
+            tint = if (isListening) MaterialTheme.colorScheme.error else LocalContentColor.current
+        )
+    }
+}
 
 /**
  * Files this turn wrote, as buttons that open them.
@@ -1423,7 +1497,9 @@ fun InputArea(
     enabled: Boolean = true,
     canSend: Boolean = true,
     isListening: Boolean = false,
-    onMicClick: () -> Unit = {}
+    onMicTap: () -> Unit = {},
+    onMicHoldStart: () -> Unit = {},
+    onMicHoldEnd: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -1465,7 +1541,7 @@ fun InputArea(
                         true
                     },
                 placeholder = {
-                    Text(if (isListening) "Listening..." else "Type a message...")
+                    Text(if (isListening) "Listening..." else "Type or hold the mic")
                 },
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Text,
@@ -1488,16 +1564,13 @@ fun InputArea(
 
             Spacer(modifier = Modifier.width(4.dp))
 
-            // Coloured while listening rather than swapped for a stop icon: the shape staying
-            // put makes it obvious the same button ends the session.
-            IconButton(onClick = onMicClick, enabled = enabled) {
-                Icon(
-                    imageVector = if (isListening) Icons.Default.Mic else Icons.Default.MicNone,
-                    contentDescription = if (isListening) "Stop dictating" else "Dictate",
-                    tint = if (isListening) MaterialTheme.colorScheme.error
-                           else LocalContentColor.current
-                )
-            }
+            MicButton(
+                isListening = isListening,
+                enabled = enabled,
+                onTap = onMicTap,
+                onHoldStart = onMicHoldStart,
+                onHoldEnd = onMicHoldEnd
+            )
 
             Spacer(modifier = Modifier.width(4.dp))
 
