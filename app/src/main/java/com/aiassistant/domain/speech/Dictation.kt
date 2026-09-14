@@ -1,13 +1,13 @@
 package com.aiassistant.domain.speech
 
 import android.content.Context
-import dagger.hilt.android.qualifiers.ApplicationContext
 import android.content.Intent
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,18 +17,18 @@ import javax.inject.Singleton
 private const val TAG = "Dictation"
 
 /**
- * Give up after this many silent restarts, so a mic left open does not sit there forever.
- */
-private const val MAX_IDLE_RESTARTS = 3
-
-/**
- * Speech to text, shaped for dictating a message rather than issuing a command.
+ * Speech to text: one utterance per press of the microphone.
  *
- * The platform recogniser is built around single utterances: it stops on a pause and reports
- * either a result or a no-match. Left alone that means a sentence, then silence. So a session
- * here spans as many of those as the user needs -- each result is appended and listening starts
- * again -- until they stop it, or three consecutive pauses suggest they have finished talking
- * and walked away.
+ * This used to keep listening, restarting after each pause so a long message could be dictated
+ * in one go. It worked, and it was unusable: the recognition service plays its start and stop
+ * earcons on every startListening, so a continuous session beeped after every sentence. There is
+ * no public way to silence those -- the usual trick is muting an entire audio stream, which
+ * takes the user's music with it and leaves the device muted if anything throws on the way back.
+ *
+ * So this follows the shape the platform actually has. A press listens until you stop talking,
+ * appends what you said, and ends. Pressing again adds to what is already in the box, which is
+ * how a longer message gets dictated: in sentences, at the cost of a tap each, and with one pair
+ * of beeps rather than a stream of them.
  */
 @Singleton
 class Dictation @Inject constructor(
@@ -37,7 +37,7 @@ class Dictation @Inject constructor(
 
     data class State(
         val listening: Boolean = false,
-        /** Everything recognised this session, including the sentence in progress. */
+        /** This utterance, updated as it is recognised. Not cumulative across presses. */
         val transcript: String = "",
         val error: String? = null
     )
@@ -47,9 +47,8 @@ class Dictation @Inject constructor(
 
     private var recognizer: SpeechRecognizer? = null
 
-    /** Text from sentences already finalised; the live partial is appended for display. */
-    private var settled = ""
-    private var idleRestarts = 0
+    /** Whether this utterance has produced anything, final or partial. */
+    private var heardSomething = false
 
     val isAvailable: Boolean get() = SpeechRecognizer.isRecognitionAvailable(context)
 
@@ -60,30 +59,34 @@ class Dictation @Inject constructor(
             _state.value = State(error = "No speech recognition on this device.")
             return
         }
-        settled = ""
-        idleRestarts = 0
         _state.value = State(listening = true)
+
+        recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+            setRecognitionListener(Listener())
+        }
         listen()
     }
 
-    /** Ends the session and releases the microphone. */
+    /** Ends the utterance and releases the microphone. */
     fun stop() {
-        idleRestarts = MAX_IDLE_RESTARTS
         release()
-        _state.value = _state.value.copy(listening = false)
+        _state.value = _state.value.copy(listening = false, error = null)
     }
 
     private fun release() {
-        // Destroyed rather than kept: holding a recogniser holds the mic, and on some devices
-        // that shows a permanent recording indicator.
-        recognizer?.runCatching { destroy() }
+        recognizer?.runCatching {
+            setRecognitionListener(null)
+            cancel()
+            // Only here, at the end of the session: holding a recogniser holds the microphone
+            // and the system indicator with it.
+            destroy()
+        }
         recognizer = null
     }
 
     private fun listen() {
-        release()
-        val speech = SpeechRecognizer.createSpeechRecognizer(context).also { recognizer = it }
-        speech.setRecognitionListener(Listener())
+        val speech = recognizer ?: return
+        heardSomething = false
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(
@@ -98,61 +101,51 @@ class Dictation @Inject constructor(
         }
         runCatching { speech.startListening(intent) }.onFailure {
             Log.e(TAG, "startListening failed", it)
+            release()
             _state.value = State(listening = false, error = it.message)
         }
     }
 
-    /** Another utterance, unless the user stopped or the room has gone quiet. */
-    private fun continueOrFinish() {
-        if (!_state.value.listening) return
-        if (idleRestarts >= MAX_IDLE_RESTARTS) {
-            stop()
-            return
-        }
-        listen()
-    }
-
-    private fun publish(live: String) {
-        val joined = listOf(settled, live).filter { it.isNotBlank() }.joinToString(" ")
-        _state.value = _state.value.copy(transcript = joined)
+    private fun publish(text: String) {
+        _state.value = _state.value.copy(transcript = text)
     }
 
     private inner class Listener : RecognitionListener {
+
         override fun onResults(results: Bundle?) {
-            val text = results.firstResult()
-            if (text.isNullOrBlank()) {
-                idleRestarts++
-            } else {
-                idleRestarts = 0
-                settled = listOf(settled, text).filter { it.isNotBlank() }.joinToString(" ")
-            }
-            publish("")
-            continueOrFinish()
+            if (!_state.value.listening) return
+            // The final result supersedes the partials rather than adding to them.
+            results.firstResult()?.takeIf { it.isNotBlank() }?.let { publish(it) }
+            stop()
         }
 
         override fun onPartialResults(partialResults: Bundle?) {
-            partialResults.firstResult()?.takeIf { it.isNotBlank() }?.let { publish(it) }
+            if (!_state.value.listening) return
+            partialResults.firstResult()?.takeIf { it.isNotBlank() }?.let {
+                heardSomething = true
+                publish(it)
+            }
         }
 
         override fun onError(error: Int) {
-            when (error) {
-                // A pause, not a failure. Keep the session open and listen again.
-                SpeechRecognizer.ERROR_NO_MATCH,
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                    idleRestarts++
-                    publish("")
-                    continueOrFinish()
+            if (!_state.value.listening) {
+                Log.d(TAG, "Ignoring error $error after the session ended")
+                return
+            }
+            when {
+                // Nothing said. Ending quietly is the whole response: a toast reading "no match"
+                // for a press the user thought better of would be noise.
+                error == SpeechRecognizer.ERROR_NO_MATCH ||
+                    error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> stop()
+
+                // Words already arrived, so whatever the service is complaining about on the way
+                // out, the utterance succeeded. Keep the text and end quietly.
+                heardSomething -> {
+                    Log.d(TAG, "Error $error after a result; keeping what was heard")
+                    stop()
                 }
-                // The recogniser is still finishing the previous session; try once more.
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> continueOrFinish()
-                else -> {
-                    Log.w(TAG, "Recognition error $error")
-                    release()
-                    _state.value = _state.value.copy(
-                        listening = false,
-                        error = describe(error)
-                    )
-                }
+
+                else -> fail(error)
             }
         }
 
@@ -162,6 +155,12 @@ class Dictation @Inject constructor(
         override fun onBufferReceived(buffer: ByteArray?) = Unit
         override fun onEndOfSpeech() = Unit
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
+
+        private fun fail(error: Int) {
+            Log.w(TAG, "Recognition error $error")
+            release()
+            _state.value = _state.value.copy(listening = false, error = describe(error))
+        }
     }
 
     private fun Bundle?.firstResult(): String? =
@@ -173,9 +172,13 @@ class Dictation @Inject constructor(
         SpeechRecognizer.ERROR_NETWORK,
         SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
             "Speech recognition needs a connection on this device."
+        SpeechRecognizer.ERROR_SERVER,
+        SpeechRecognizer.ERROR_SERVER_DISCONNECTED ->
+            "The speech recognition service stopped responding."
         SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
         SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
-            "This language is not available for speech recognition."
+            "This language is not available for speech recognition. " +
+                "Install the offline speech pack in system settings."
         else -> "Speech recognition failed ($error)."
     }
 }
