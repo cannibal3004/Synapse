@@ -61,6 +61,7 @@ import com.google.gson.JsonParser
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.PermissionStatus
+import com.google.accompanist.permissions.isGranted
 import java.io.File
 
 data class MessageGroup(
@@ -163,6 +164,31 @@ fun ChatScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var userInput by remember { mutableStateOf("") }
+
+    // Dictation appends to whatever was already typed rather than replacing it, so starting to
+    // speak mid-sentence continues the sentence.
+    val dictationState by viewModel.dictation.state.collectAsStateWithLifecycle()
+    val speakReplies by viewModel.speakReplies.collectAsStateWithLifecycle()
+    var dictationPrefix by remember { mutableStateOf("") }
+    val micPermission = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
+
+    // Recognition can be unavailable for reasons the user can act on -- no language pack, no
+    // connection on a device whose recogniser needs one -- and without this the microphone
+    // button simply appears to do nothing.
+    val toastContext = LocalContext.current
+    LaunchedEffect(dictationState.error) {
+        dictationState.error?.let {
+            android.widget.Toast.makeText(toastContext, it, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    LaunchedEffect(dictationState.transcript, dictationState.listening) {
+        if (dictationState.listening || dictationState.transcript.isNotBlank()) {
+            userInput = listOf(dictationPrefix, dictationState.transcript)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
+        }
+    }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var pendingAttachments by remember { mutableStateOf<List<Attachment>>(emptyList()) }
     var showAttachDialog by remember { mutableStateOf(false) }
@@ -326,6 +352,16 @@ fun ChatScreen(
                 },
                 actions = {
                     var showMoreMenu by remember { mutableStateOf(false) }
+                    IconButton(onClick = { viewModel.toggleSpeakReplies() }) {
+                        Icon(
+                            imageVector = if (speakReplies) Icons.Default.VolumeUp
+                                          else Icons.Default.VolumeOff,
+                            contentDescription = if (speakReplies) "Stop reading replies aloud"
+                                                 else "Read replies aloud",
+                            tint = if (speakReplies) MaterialTheme.colorScheme.primary
+                                   else LocalContentColor.current
+                        )
+                    }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Default.Settings, "Settings")
                     }
@@ -543,13 +579,26 @@ fun ChatScreen(
                 InputArea(
                     input = userInput,
                     onInputChange = { userInput = it },
+                    isListening = dictationState.listening,
+                    onMicClick = {
+                        if (dictationState.listening) {
+                            viewModel.stopDictation()
+                        } else if (micPermission.status.isGranted) {
+                            dictationPrefix = userInput
+                            viewModel.startDictation()
+                        } else {
+                            micPermission.launchPermissionRequest()
+                        }
+                    },
                     onSend = {
                         if (userInput.isNotBlank() || uiState.pendingAttachments.isNotEmpty()) {
+                            viewModel.stopDictation()
                             viewModel.sendMessage(
                                 userMessage = userInput,
                                 attachments = uiState.pendingAttachments
                             )
                             userInput = ""
+                            dictationPrefix = ""
                         }
                     },
                     onAttachClick = {
@@ -1372,7 +1421,9 @@ fun InputArea(
     onSend: () -> Unit,
     onAttachClick: () -> Unit,
     enabled: Boolean = true,
-    canSend: Boolean = true
+    canSend: Boolean = true,
+    isListening: Boolean = false,
+    onMicClick: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -1413,7 +1464,9 @@ fun InputArea(
                         // still inserts the newline we just decided not to make.
                         true
                     },
-                placeholder = { Text("Type a message...") },
+                placeholder = {
+                    Text(if (isListening) "Listening..." else "Type a message...")
+                },
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Text,
                     capitalization = KeyboardCapitalization.Sentences
@@ -1433,7 +1486,20 @@ fun InputArea(
                 )
             )
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+
+            // Coloured while listening rather than swapped for a stop icon: the shape staying
+            // put makes it obvious the same button ends the session.
+            IconButton(onClick = onMicClick, enabled = enabled) {
+                Icon(
+                    imageVector = if (isListening) Icons.Default.Mic else Icons.Default.MicNone,
+                    contentDescription = if (isListening) "Stop dictating" else "Dictate",
+                    tint = if (isListening) MaterialTheme.colorScheme.error
+                           else LocalContentColor.current
+                )
+            }
+
+            Spacer(modifier = Modifier.width(4.dp))
 
             FilledIconButton(
                 onClick = onSend,

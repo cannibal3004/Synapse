@@ -11,6 +11,8 @@ import com.aiassistant.data.model.api.ChatMessage as ApiChatMessage
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.service.ActiveConversation
 import com.aiassistant.domain.service.ActiveTurn
+import com.aiassistant.domain.speech.Dictation
+import com.aiassistant.domain.speech.Speaker
 import com.aiassistant.domain.tool.formatMemoryContext
 import com.aiassistant.data.model.api.StreamEvent
 import com.aiassistant.domain.model.TurnActivity
@@ -85,6 +87,8 @@ class ChatViewModel @Inject constructor(
     private val memorySearchUseCase: MemorySearchUseCase,
     private val activeConversation: ActiveConversation,
     private val activeTurn: ActiveTurn,
+    private val speaker: Speaker,
+    val dictation: Dictation,
     @ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
 
@@ -97,6 +101,31 @@ class ChatViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+
+    /**
+     * Whether replies are read aloud. Kept in preferences rather than per conversation: it is a
+     * property of how you are using the phone right now -- driving, cooking -- not of the chat.
+     */
+    private val speechPrefs by lazy {
+        applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+    }
+    private val _speakReplies = MutableStateFlow(speechPrefs.getBoolean("speak_replies", false))
+    val speakReplies: StateFlow<Boolean> = _speakReplies.asStateFlow()
+
+    fun toggleSpeakReplies() {
+        val next = !_speakReplies.value
+        _speakReplies.value = next
+        speechPrefs.edit().putBoolean("speak_replies", next).apply()
+        if (!next) speaker.stop()
+    }
+
+    fun startDictation() {
+        // Barge-in: talking over the reply is the thing people do, and expect to work.
+        speaker.stop()
+        dictation.start()
+    }
+
+    fun stopDictation() = dictation.stop()
 
     private val gson = Gson()
 
@@ -181,6 +210,7 @@ class ChatViewModel @Inject constructor(
      * also what a crash mid-reply leaves behind.
      */
     private fun cancelActiveTurn() {
+        speaker.stop()
         turnJob?.cancel()
         turnJob = null
         // Not only in the coroutine's finally: a job cancelled before its body was ever
@@ -420,6 +450,9 @@ class ChatViewModel @Inject constructor(
                 // Runs on cancellation too, which is the case that matters: a flag left set
                 // would have the shell asking about a reply that stopped long ago.
                 activeTurn.end(this@ChatViewModel)
+                // Whatever is left in the buffer is a sentence the user would otherwise never
+                // hear. On cancellation there is nothing more coming either way.
+                if (_speakReplies.value) speaker.flush()
             }
         }
     }
@@ -506,6 +539,7 @@ class ChatViewModel @Inject constructor(
                 .collect { event ->
                 when (event) {
                     is OnDeviceLlmEngine.ChatEvent.Chunk -> {
+                        if (_speakReplies.value) speaker.feed(event.text)
                         fullResponse += event.text
                         _uiState.value = _uiState.value.copy(streamingResponse = fullResponse)
                     }
@@ -580,6 +614,7 @@ class ChatViewModel @Inject constructor(
             ).collect { event ->
                 when (event) {
                     is StreamEvent.Delta -> {
+                        if (_speakReplies.value) speaker.feed(event.text)
                         streamed.append(event.text)
                         _uiState.value =
                             _uiState.value.copy(streamingResponse = streamed.toString())
