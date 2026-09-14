@@ -30,7 +30,8 @@ import com.aiassistant.presentation.vm.TaskViewModel
 @Composable
 fun TaskScreen(
     onNavigateBack: () -> Unit,
-    onToggleDrawer: () -> Unit,
+    /** Opens the navigation drawer, or null when the sidebar is already on screen. */
+    onToggleDrawer: (() -> Unit)?,
     viewModel: TaskViewModel = hiltViewModel(),
     executionHistoryId: String? = null
 ) {
@@ -47,8 +48,10 @@ fun TaskScreen(
                 title = { Text("Scheduled Tasks") },
                 navigationIcon = {
                     Row {
-                        IconButton(onClick = onToggleDrawer) {
-                            Icon(Icons.Default.Menu, "Menu")
+                        onToggleDrawer?.let { toggle ->
+                            IconButton(onClick = toggle) {
+                                Icon(Icons.Default.Menu, "Menu")
+                            }
                         }
                         IconButton(onClick = onNavigateBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")

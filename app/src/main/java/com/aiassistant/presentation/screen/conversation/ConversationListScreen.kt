@@ -27,7 +27,8 @@ import java.util.concurrent.TimeUnit
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationListScreen(
-    onToggleDrawer: () -> Unit,
+    /** Opens the navigation drawer, or null when the sidebar is already on screen. */
+    onToggleDrawer: (() -> Unit)?,
     onConversationSelected: (String) -> Unit,
     onNewConversation: () -> Unit,
     viewModel: ConversationListViewModel = hiltViewModel()
@@ -92,8 +93,10 @@ fun ConversationListScreen(
                 TopAppBar(
                     title = { Text("Chats") },
                     navigationIcon = {
-                        IconButton(onClick = onToggleDrawer) {
-                            Icon(Icons.Default.Menu, "Menu")
+                        onToggleDrawer?.let { toggle ->
+                            IconButton(onClick = toggle) {
+                                Icon(Icons.Default.Menu, "Menu")
+                            }
                         }
                     },
                     actions = {

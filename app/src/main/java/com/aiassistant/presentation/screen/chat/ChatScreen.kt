@@ -31,6 +31,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -149,7 +155,8 @@ private fun AttachFileDialog(
 fun ChatScreen(
     conversationId: String,
     onNavigateToSettings: () -> Unit,
-    onToggleDrawer: () -> Unit,
+    /** Opens the navigation drawer, or null when the sidebar is already on screen. */
+    onToggleDrawer: (() -> Unit)?,
     viewModel: ChatViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -292,8 +299,10 @@ fun ChatScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = onToggleDrawer) {
-                        Icon(Icons.Default.Menu, "Menu")
+                    onToggleDrawer?.let { toggle ->
+                        IconButton(onClick = toggle) {
+                            Icon(Icons.Default.Menu, "Menu")
+                        }
                     }
                 },
                 actions = {
@@ -443,10 +452,15 @@ fun ChatScreen(
 
             LazyColumn(
                 modifier = if (showGreeting) {
-                    Modifier.fillMaxWidth()
+                    Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .widthIn(max = READABLE_WIDTH)
+                        .fillMaxWidth()
                 } else {
                     Modifier
                         .weight(1f)
+                        .align(Alignment.CenterHorizontally)
+                        .widthIn(max = READABLE_WIDTH)
                         .fillMaxWidth()
                 },
                 state = listState,
@@ -491,34 +505,41 @@ fun ChatScreen(
 
             HorizontalDivider()
 
-            AttachmentPreviewRow(
-                attachments = uiState.pendingAttachments,
-                onRemove = { uri ->
-                    viewModel.removeAttachment(uri)
-                },
-                onClear = {
-                    viewModel.clearAttachments()
-                }
-            )
-
-            InputArea(
-                input = userInput,
-                onInputChange = { userInput = it },
-                onSend = {
-                    if (userInput.isNotBlank() || uiState.pendingAttachments.isNotEmpty()) {
-                        viewModel.sendMessage(
-                            userMessage = userInput,
-                            attachments = uiState.pendingAttachments
-                        )
-                        userInput = ""
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .widthIn(max = READABLE_WIDTH)
+                    .fillMaxWidth()
+            ) {
+                AttachmentPreviewRow(
+                    attachments = uiState.pendingAttachments,
+                    onRemove = { uri ->
+                        viewModel.removeAttachment(uri)
+                    },
+                    onClear = {
+                        viewModel.clearAttachments()
                     }
-                },
-                onAttachClick = {
-                    showAttachDialog = true
-                },
-                enabled = !uiState.isLoading,
-                canSend = userInput.isNotBlank() || uiState.pendingAttachments.isNotEmpty()
-            )
+                )
+
+                InputArea(
+                    input = userInput,
+                    onInputChange = { userInput = it },
+                    onSend = {
+                        if (userInput.isNotBlank() || uiState.pendingAttachments.isNotEmpty()) {
+                            viewModel.sendMessage(
+                                userMessage = userInput,
+                                attachments = uiState.pendingAttachments
+                            )
+                            userInput = ""
+                        }
+                    },
+                    onAttachClick = {
+                        showAttachDialog = true
+                    },
+                    enabled = !uiState.isLoading,
+                    canSend = userInput.isNotBlank() || uiState.pendingAttachments.isNotEmpty()
+                )
+            }
         }
     }
 
@@ -776,6 +797,16 @@ private fun MessageGroupRow(group: MessageGroup) {
         }
     }
 }
+
+/**
+ * The widest the transcript and composer are allowed to get.
+ *
+ * A maximised DeX window is over a thousand dp across, and a line of prose that wide is hard to
+ * read -- the eye loses the start of the next line. Capping and centring keeps the measure the
+ * same whatever the window is doing. Narrower than this the cap never binds, so a phone is
+ * unaffected.
+ */
+private val READABLE_WIDTH = 760.dp
 
 /** Slack when deciding "at the bottom", so a pixel of rounding does not stop the follow. */
 private const val AUTOSCROLL_SLACK_PX = 64
@@ -1262,7 +1293,19 @@ fun InputArea(
             TextField(
                 value = input,
                 onValueChange = onInputChange,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    // Hardware keyboards only. A soft keyboard commits its newline through the
+                    // input connection rather than as a key event, so this never fires on a
+                    // phone -- which is what we want, since there is no Shift to hold there.
+                    .onPreviewKeyEvent { event ->
+                        val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
+                        if (!enter || event.isShiftPressed) return@onPreviewKeyEvent false
+                        if (event.type == KeyEventType.KeyDown && canSend && enabled) onSend()
+                        // Both halves of the chord are swallowed; letting the key-up through
+                        // still inserts the newline we just decided not to make.
+                        true
+                    },
                 placeholder = { Text("Type a message...") },
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Text,

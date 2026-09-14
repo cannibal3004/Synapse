@@ -180,7 +180,11 @@ class ChatViewModel @Inject constructor(
                         conversationTitle = "",
                         systemPrompt = systemPrompt,
                         model = _model.value,
-                        pendingAttachments = emptyList()
+                        pendingAttachments = emptyList(),
+                        activity = emptyList(),
+                        streamingResponse = null,
+                        onDeviceStats = null,
+                        error = null
                     )
                     Log.d("ChatViewModel", "Conversation created: $id")
                 } else {
@@ -191,7 +195,11 @@ class ChatViewModel @Inject constructor(
                         conversationTitle = "",
                         systemPrompt = systemPrompt,
                         model = _model.value,
-                        pendingAttachments = emptyList()
+                        pendingAttachments = emptyList(),
+                        activity = emptyList(),
+                        streamingResponse = null,
+                        onDeviceStats = null,
+                        error = null
                     )
                     _systemPrompt.value = systemPrompt
                     Log.d("ChatViewModel", "New conversation created in memory only")
@@ -213,10 +221,18 @@ class ChatViewModel @Inject constructor(
                 val messages = messageRepository.getMessagesSync(conversationId)
                 _uiState.value = _uiState.value.copy(
                     conversationId = conversationId,
+                    isNewConversation = false,
                     messages = messages,
                     systemPrompt = conversation?.systemPrompt,
                     model = conversation?.model ?: _model.value,
-                    conversationTitle = conversation?.title.orEmpty()
+                    conversationTitle = conversation?.title.orEmpty(),
+                    // Whatever the last turn was doing belonged to the conversation we just
+                    // left. Carried over, its activity row hangs above the first message of
+                    // this one.
+                    activity = emptyList(),
+                    streamingResponse = null,
+                    onDeviceStats = null,
+                    error = null
                 )
                 _systemPrompt.value = conversation?.systemPrompt
             } catch (e: Exception) {
