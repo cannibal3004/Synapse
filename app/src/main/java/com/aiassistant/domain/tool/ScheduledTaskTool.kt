@@ -130,9 +130,11 @@ class ScheduledTaskTool(
             nextRunAt = schedule.nextRunAt(now)
         )
 
-        blocking { taskRepository.insertTask(task) }
-        taskScheduler.scheduleTask(task)
-        return "Created.\n${task.describe()}"
+        // Scheduled and reported under the id the repository actually stored, so the work
+        // finds its task and a later update or delete finds the same one.
+        val stored = task.copy(id = blocking { taskRepository.insertTask(task) })
+        taskScheduler.scheduleTask(stored)
+        return "Created.\n${stored.describe()}"
     }
 
     private fun update(args: Map<*, *>): String {

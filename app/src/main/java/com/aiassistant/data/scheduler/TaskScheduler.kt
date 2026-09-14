@@ -81,6 +81,27 @@ class TaskScheduler @Inject constructor(
         Log.d(TAG, "Rescheduled ${enabledTasks.size} enabled tasks")
     }
 
+    /**
+     * Gives every enabled task work, without disturbing work it already has.
+     *
+     * A task whose work goes missing is invisible: the row sits in the list looking scheduled,
+     * and simply never runs again. That happened for real -- work enqueued under an id the
+     * database never stored -- and nothing would ever have noticed. KEEP rather than REPLACE, so
+     * this is a repair and not a reset: a task that is correctly scheduled keeps the run it is
+     * already waiting for rather than having its timer restarted on every launch.
+     */
+    fun ensureScheduled(tasks: List<ScheduledTask>) {
+        val enabled = tasks.filter { it.isEnabled }
+        for (task in enabled) {
+            WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+                "task_${task.id}",
+                ExistingWorkPolicy.KEEP,
+                buildWorkRequest(task)
+            )
+        }
+        Log.d(TAG, "Checked ${enabled.size} enabled task(s) have work scheduled")
+    }
+
     private fun buildWorkRequest(task: ScheduledTask): OneTimeWorkRequest {
         val builder = OneTimeWorkRequestBuilder<TaskWorker>()
             .setInputData(
@@ -99,11 +120,12 @@ class TaskScheduler @Inject constructor(
             .setRequiresBatteryNotLow(true)
 
         when (task.scheduleType) {
-            ScheduleType.ONCE -> {
-                builder.setInitialDelay(0, TimeUnit.MILLISECONDS)
-            }
+            // Both of these carry the time they are due in nextRunAt, and it is the only place
+            // a delay the user asked for survives. ONCE used to hard-code a zero delay, so
+            // "remind me in two hours" ran the moment it was created.
+            ScheduleType.ONCE,
             ScheduleType.INTERVAL -> {
-                val delayMs = task.intervalMinutes * 60 * 1000
+                val delayMs = (task.nextRunAt - System.currentTimeMillis()).coerceAtLeast(0)
                 builder.setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
             }
             ScheduleType.CRON -> {
@@ -124,14 +146,13 @@ class TaskScheduler @Inject constructor(
             }
         }
 
-        val needsNetwork = task.prompt.contains("search", ignoreCase = true) ||
-                task.prompt.contains("fetch", ignoreCase = true) ||
-                task.prompt.contains("weather", ignoreCase = true) ||
-                task.prompt.contains("news", ignoreCase = true) ||
-                task.prompt.contains("stock", ignoreCase = true)
-
+        // A hosted model is reached over the network whatever the prompt says, and an
+        // on-device one never is. The previous rule sniffed the prompt for words like "weather"
+        // and demanded an UNMETERED connection otherwise -- which got it wrong both ways: a task
+        // that needed the API but said none of those words would not run on mobile data, and a
+        // task that needed nothing at all still waited for wifi.
         constraintsBuilder.setRequiredNetworkType(
-            if (needsNetwork) NetworkType.CONNECTED else NetworkType.UNMETERED
+            if (task.onDevice) NetworkType.NOT_REQUIRED else NetworkType.CONNECTED
         )
 
         builder.setConstraints(constraintsBuilder.build())

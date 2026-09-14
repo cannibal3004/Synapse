@@ -58,9 +58,17 @@ class TaskWorker(
     }
 
     override suspend fun doWork(): Result {
-        val taskId = inputData.getString(KEY_TASK_ID) ?: return Result.failure()
+        val taskId = inputData.getString(KEY_TASK_ID) ?: run {
+            Log.w(TAG, "Work started with no task id in its input data")
+            return Result.failure()
+        }
         val task = taskRepository.getTaskById(taskId)
-            ?: return Result.failure()
+            ?: run {
+                // Worth a log rather than a bare failure: from the outside this is a task that
+                // simply never ran, and the reason is only visible in WorkManager's own database.
+                Log.w(TAG, "No task $taskId in the database; it was deleted, or was scheduled under an id that was never stored")
+                return Result.failure()
+            }
 
         if (!task.isEnabled) {
             Log.d(TAG, "Task $taskId is disabled, skipping")
