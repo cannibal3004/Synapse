@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -157,10 +159,35 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The reply being generated, if there is one.
+     *
+     * Held so that leaving the conversation can stop it. Not every switch destroys this
+     * ViewModel -- the overflow menu's "New conversation" resets in place -- and a turn that
+     * outlives its conversation goes on writing its stream, its activity row and finally its
+     * whole transcript into whatever is on screen by then.
+     */
+    private var activeTurn: Job? = null
+
+    /**
+     * Abandons the turn in flight.
+     *
+     * The reply is dropped rather than finished in the background: tool provenance is a single
+     * process-wide value and the on-device engine is one instance, so two turns running at once
+     * would write over each other in ways a stray UI update would be the least of. Anything
+     * already persisted stays; the conversation keeps the question without an answer, which is
+     * also what a crash mid-reply leaves behind.
+     */
+    private fun cancelActiveTurn() {
+        activeTurn?.cancel()
+        activeTurn = null
+    }
+
     fun createNewConversation(
         systemPrompt: String? = null,
         persistToDb: Boolean = true
     ) {
+        cancelActiveTurn()
         viewModelScope.launch {
             try {
                 Log.d("ChatViewModel", "Creating new conversation with model=${_model.value}, persistToDb=$persistToDb")
@@ -184,7 +211,8 @@ class ChatViewModel @Inject constructor(
                         activity = emptyList(),
                         streamingResponse = null,
                         onDeviceStats = null,
-                        error = null
+                        error = null,
+                        isLoading = false
                     )
                     Log.d("ChatViewModel", "Conversation created: $id")
                 } else {
@@ -199,7 +227,8 @@ class ChatViewModel @Inject constructor(
                         activity = emptyList(),
                         streamingResponse = null,
                         onDeviceStats = null,
-                        error = null
+                        error = null,
+                        isLoading = false
                     )
                     _systemPrompt.value = systemPrompt
                     Log.d("ChatViewModel", "New conversation created in memory only")
@@ -214,6 +243,7 @@ class ChatViewModel @Inject constructor(
     }
 
     fun loadConversation(conversationId: String) {
+        cancelActiveTurn()
         viewModelScope.launch {
             try {
                 Log.d("ChatViewModel", "Loading conversation: $conversationId")
@@ -232,7 +262,8 @@ class ChatViewModel @Inject constructor(
                     activity = emptyList(),
                     streamingResponse = null,
                     onDeviceStats = null,
-                    error = null
+                    error = null,
+                    isLoading = false
                 )
                 _systemPrompt.value = conversation?.systemPrompt
             } catch (e: Exception) {
@@ -289,7 +320,7 @@ class ChatViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
+        activeTurn = viewModelScope.launch {
             val tempConversationId = _uiState.value.conversationId ?: "temp_new_${System.currentTimeMillis()}"
             val userMsg = ChatMessage(
                 id = "temp_${System.currentTimeMillis()}",
@@ -359,6 +390,12 @@ class ChatViewModel @Inject constructor(
                     streamingResponse = null,
                     activity = emptyList()
                 )
+            } catch (e: CancellationException) {
+                // Leaving the conversation, not a failure. Rethrow so the coroutine actually
+                // ends -- swallowing it here raised an error banner on the screen the user had
+                // just moved to.
+                Log.d("ChatViewModel", "Turn abandoned for $tempConversationId")
+                throw e
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error sending message", e)
                 _uiState.value = _uiState.value.copy(

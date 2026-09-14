@@ -148,7 +148,15 @@ fun AppNavigation(
 private fun NavHostController.navigateTopLevel(route: String) {
     navigate(route) {
         popUpTo(graph.startDestinationId) { inclusive = true }
-        launchSingleTop = true
+        // Single-top for the fixed destinations, so re-clicking Settings does not throw away a
+        // form you were halfway through filling in.
+        //
+        // Not for chat. Every conversation shares one `chat/{id}` destination, so single-top
+        // reuses the entry -- and with it the ChatViewModel, which is where a reply already in
+        // flight lives. Reusing it let a reply for the conversation you just left carry on
+        // painting into the one you opened. A new entry means a new ViewModel, and the old
+        // scope is cancelled with the entry it belonged to.
+        launchSingleTop = !route.startsWith("chat/")
     }
 }
 
