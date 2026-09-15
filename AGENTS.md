@@ -35,28 +35,52 @@ Versions live in `gradle/libs.versions.toml` (version catalog) — not inline in
 
 Three-layer Clean Architecture:
 
+Plus a second process: on-device inference runs in `:llm`, behind `LlmClient` / `LlmIpc` /
+`LlmService`. Anything reached from both processes has to tolerate that (see **Memory**).
+
 ### Presentation (`presentation/`)
-- **Screens**: `ChatScreen.kt`, `SettingsScreen.kt`
-- **ViewModels**: `ChatViewModel.kt`, `SettingsViewModel.kt`
-- **Navigation**: `AppNavigation.kt` (NavHost with "chat" and "settings")
-- **UI Components**: `MarkdownText.kt` (commonmark renderer)
+- **Screens**: `chat/ChatScreen.kt`, `conversation/ConversationListScreen.kt`,
+  `settings/SettingsScreen.kt`, `tasks/TaskScreen.kt`
+- **ViewModels**: `ChatViewModel`, `ConversationListViewModel`, `SettingsViewModel`,
+  `TaskViewModel`, `ShellViewModel`
+- **Navigation**: `AppNavigation.kt` — routes `conversationList`, `chat/{conversationId}`,
+  `settings`, `tasks`, `tasks/deeplink/{executionHistoryId}`. Switches between a compact layout and
+  a sidebar layout at `DESKTOP_WIDTH_DP` (840dp)
+- **UI Components**: `chat/MarkdownText.kt` (commonmark renderer), `component/StopReplyDialog.kt`
 
 ### Domain (`domain/`)
-- **Models**: `ChatMessage`, `Conversation`, `MemoryEntry`, `Attachment`, `ToolCall`, `ToolResult`
-- **Repositories**: Interfaces (`ChatApiRepository`, `ConversationRepository`, etc.)
-- **Use Cases**: `SendChatMessageUseCase`, `MemorySearchUseCase`
-- **Services**: `ToolManager` (tool registry), `VectorMathService` (cosine similarity)
-- **Tools**: `CalculatorTool`, `CodeInterpreterTool`, `DeviceInfoTool`, `WebSearchTool`, `WebPageFetcherTool`, `WeatherTool`
+- **Models**: `ChatMessage`, `Attachment` (both in `ChatMessage.kt`), `Conversation`,
+  `MemoryEntry`, `ScheduledTask`, `TaskExecutionHistory`, `TurnActivity`
+- **Repositories**: Interfaces (`ChatApiRepository`, `ConversationRepository`, `MessageRepository`,
+  `MemoryRepository`, `TaskRepository`, `OnDeviceLlmRepository`, `EmbeddingProvider`)
+- **Use Cases**: `SendChatMessageUseCase`, `MemorySearchUseCase`, `TaskExecutor`, `CronScheduler`
+- **Services**: `ToolManager` (tool registry), `VectorMathService` (cosine similarity),
+  `ActiveConversation`, `ActiveTurn`
+- **Speech** (`domain/speech/`): `Dictation` (SpeechRecognizer), `Speaker` (TextToSpeech)
+- **LLM** (`domain/llm/`): `OnDeviceLlmEngine`, `OnDeviceEmbeddingEngine`, `LlmBackend`,
+  `OnDeviceLlmSettings`, `GenerationStats`
+- **Tools**: `TermuxShellTool`, `WebSearchTool`, `WebPageFetcherTool`, `WeatherTool`,
+  `CalendarTool`, `SmsTool`, `SaveFileTool`, `ScheduledTaskTool`, `MemoryTools`, `DeviceInfoTool`,
+  plus `ToolExecutor` (app process) and `OnDeviceToolExecutor` (`:llm`)
+
+There is no `CalculatorTool` and no `CodeInterpreterTool`. Both were deleted; `termux_shell` is the
+catch-all for arithmetic and for running code, with a real shell behind it. Do not reintroduce a
+sandboxed interpreter without asking.
 
 ### Data (`data/`)
-- **API**: Retrofit client (`OpenAIService`, `RetrofitClient`)
-- **Database**: Room (`AppDatabase`, `ConversationDao`, `MessageDao`, `MemoryDao`)
+- **API**: Retrofit client (`OpenAIService`, `RetrofitClient`), streaming chat completions
+- **Database**: Room (`AppDatabase`, `ConversationDao`, `MessageDao`, `MemoryDao`,
+  `ScheduledTaskDao`, `TaskExecutionHistoryDao`)
 - **Repositories**: Implementations of domain interfaces
-- **Models**: Room entities (`ConversationEntity`, `MessageEntity`, `MemoryEntryEntity`), API models (`ChatCompletionRequest`, `ChatCompletionResponse`, etc.)
+- **Scheduler / worker**: `scheduler/TaskScheduler.kt`, `worker/TaskWorker.kt`,
+  `worker/WorkerFactory.kt`
+- **Models**: Room entities (`ConversationEntity`, `MessageEntity`, `MemoryEntryEntity`,
+  `ScheduledTaskEntity`, `TaskExecutionHistoryEntity`), API models under `model/api/`
 
 ### Dependency Injection (`di/`)
 - `AppModule.kt` - `@Module` with `@Provides` for singletons
 - `RepositoryBindingModule.kt` - `@Module` with `@Binds` for repository interfaces
+- `WorkerFactoryModule.kt` - Hilt-aware `WorkerFactory` for `TaskWorker`
 
 ## Code Conventions
 
@@ -105,18 +129,30 @@ Three-layer Clean Architecture:
 ## Key Patterns
 
 ### Adding a New Tool
-1. Create `XxxTool.kt` in `domain/tool/`
-2. Register in `ToolManager.buildToolDefinitions()`
-3. Add case in `ToolExecutor.executeTool()`
+1. Create `XxxTool.kt` in `domain/tool/` implementing `OpenApiTool` — `getToolDescriptionJsonString()`
+   plus a single `execute(paramsJsonString: String)` entry point
+2. Call `ToolManager.registerOpenApiTool(this)` from the class's `init` block, the way the existing
+   tools do; `buildToolDefinitions()` then adapts the same schema for the API path, so what the
+   model sees cannot drift from what runs
+3. Add a case in `ToolExecutor.executeTool()` that passes the **raw JSON straight through**:
+   `"xxx" -> xxxTool.execute(arguments)`
+4. For the on-device path, add it to `OnDeviceToolExecutor.getAllTools()`
 
-For the on-device path, add an `OpenApiTool` impl in `OnDeviceToolExecutor.kt` and list it in
-`getAllTools()`; the engine picks it up by the `name` in its description JSON.
+**One entry point, always.** A tool must not have both an `execute(json)` and a typed
+`executeCommand(a, b)` that the two executors call separately. `TermuxShellTool` had exactly that,
+and `ToolExecutor` read a parameter name the schema never declared — so the tool was broken on the
+hosted path from the day it was added while working fine on-device, and the commit message claimed
+otherwise. Keep the typed function private.
+
+`manage_tasks` is deliberately **absent** from `getAllTools()`: `:llm` has its own object graph, and
+two processes writing the same Room rows is not worth it for this.
 
 ### Adding a New Screen
-1. Create `XxxScreen.kt` in `presentation/screen/`
+1. Create `XxxScreen.kt` in `presentation/screen/xxx/`
 2. Create `XxxViewModel.kt` in `presentation/vm/`
-3. Add route to `AppNavigation.kt`
-4. Add navigation graph in `AppNavigation.kt`
+3. Add a `composable(...)` route to `AppNavigation.kt`
+4. If it is reachable from the sidebar, add it to the nav items and route it through
+   `navigateTopLevel(route, desktop)` rather than a bare `navigate`
 
 ### Adding a New Repository
 1. Create interface in `domain/repository/`
@@ -125,9 +161,11 @@ For the on-device path, add an `OpenApiTool` impl in `OnDeviceToolExecutor.kt` a
 4. Add `@Provides` in `AppModule.kt` if needed
 
 ### Database Changes
-1. Update entity in `data/database/`
-2. Update DAO in `data/database/`
-3. Increment `Room.databaseBuilder().build()` version if schema migration needed
+1. Update the entity in `data/model/`
+2. Update the DAO in `data/database/`
+3. Bump `version` in `AppDatabase` (currently **5**) and supply a migration
+
+`AppDatabase` is built with `enableMultiInstanceInvalidation()` because `:llm` opens it too.
 
 ## API Integration
 
@@ -135,7 +173,9 @@ For the on-device path, add an `OpenApiTool` impl in `OnDeviceToolExecutor.kt` a
 - Base URL configurable in Settings
 - Supports chat completions, streaming, embeddings
 - Multimodal via `content: Any?` (String or array of content parts)
-- Tool calling via `tools` parameter (max 10 rounds per message)
+- Tool calling via `tools` parameter; the round cap is the **Max Tool Rounds** setting
+  (`SettingsKeys.MAX_TOOL_ROUNDS`), not a constant, and is passed through to `:llm` as
+  `EXTRA_MAX_TOOL_ROUNDS`
 
 ### Attachment Handling
 - Images: base64-encoded, sent via `image_url` content parts
@@ -166,7 +206,6 @@ For the on-device path, add an `OpenApiTool` impl in `OnDeviceToolExecutor.kt` a
 | Coil | 3.6.2 | Image loading (`coil3.*` package) |
 | Commonmark | 0.30.0 | Markdown parsing |
 | Jsoup | 1.23.2 | Web scraping |
-| Mozilla Rhino | 1.9.1 | JavaScript engine |
 | DataStore | 1.2.1 | Preferences storage |
 | WorkManager | 2.11.2 | Scheduled tasks |
 | Accompanist | 0.37.3 | Permissions |
@@ -213,7 +252,9 @@ takes ~24s and the reasoning stays out of the reply.
 ### On-device tool calling: works, via two workarounds
 
 It needs both halves. Verified end to end on Spark-X2.5-1.7B (Galaxy S24+, LiteRT-LM 0.17.0):
-`98765 * 4321` -> `calculator` -> 426,763,565, and a 3-round web search in ~92s.
+`98765 * 4321` -> `calculator` -> 426,763,565, and a 3-round web search in ~92s. (That
+measurement predates the tool overhaul; `calculator` no longer exists, and arithmetic now goes to
+`termux_shell`. The finding about the two workarounds is unaffected.)
 
 **1. The bundle's template omits the tools declaration.** litert-community conversions ship a
 simplified template, so the model is never told tools exist -- Qwen3.5-4B's manifest says so
@@ -564,6 +605,92 @@ The LiteRT-LM AAR ships no consumer ProGuard rules, and its JNI layer reads Kotl
 fields by name. `proguard-rules.pro` keeps `com.google.ai.edge.litertlm.**` — without it, release
 builds fail at inference time rather than at build time.
 
+## Scheduled Tasks
+
+A `ScheduledTask` is a prompt run later without the user present, by `TaskWorker` under WorkManager,
+with the answer delivered as a notification that deep-links to `tasks/deeplink/{executionHistoryId}`.
+`ScheduledTaskTool` (`manage_tasks`) is the model-facing adapter over the same machinery the Tasks
+screen drives.
+
+Four separate faults once combined to make a task sit in the list overnight and never run. Each is
+easy to reintroduce:
+
+- **`insertTask` returns the id that was stored.** It used to mint a fresh `UUID` and ignore
+  `task.id`, so the row went in under one id while the caller scheduled work under another. The
+  worker then woke on time, looked up a task that did not exist, and failed. `ScheduledTask` already
+  defaults its own id — always schedule with `task.copy(id = repository.insertTask(task))`.
+- **A missing task is logged, not just failed.** `Result.failure()` on its own is invisible: from
+  the UI the task simply never ran, and the reason lives only in WorkManager's own database.
+- **`ONCE` takes its delay from `nextRunAt`**, like `INTERVAL`. A hard-coded zero delay meant
+  "remind me in two hours" fired immediately.
+- **The network constraint follows `task.onDevice`**, not the words in the prompt. Sniffing for
+  "weather" or "news" and demanding `UNMETERED` otherwise got it wrong both ways.
+
+`AIAssistantApp` calls `TaskScheduler.ensureScheduled(...)` at launch with `ExistingWorkPolicy.KEEP`,
+so a task that has lost its work gets it back on the next launch without resetting the timer of one
+that is scheduled correctly. Use `KEEP` there and `REPLACE` in `scheduleTask`; swapping them turns
+the repair into a reset.
+
+To inspect what WorkManager actually holds:
+
+```bash
+adb exec-out run-as com.aiassistant cat /data/data/com.aiassistant/no_backup/androidx.work.workdb > work.db
+# WorkSpec.state: 0=ENQUEUED 2=SUCCEEDED 3=FAILED
+```
+
+## Speech
+
+Platform engines only — `SpeechRecognizer` and `TextToSpeech`. Nothing audio-related leaves the
+device beyond what the user's chosen engine already does.
+
+- **One recognizer per session.** `SpeechRecognizer` is utterance-shaped: it stops on silence, and
+  the obvious fix — destroy and recreate it per utterance — tears down the *shared* recognition
+  service and produces `ERROR_SERVER_DISCONNECTED` (11) on the next attempt. Reuse the instance and
+  call `startListening` again.
+- **The earcons are not ours.** The start/stop beeps come from the recognition service on every
+  `startListening` and cannot be suppressed. That is why the mic has two gestures rather than plain
+  continuous dictation: tap takes one utterance (`TAPPED_SILENCE_MS`, 2s), hold runs until release
+  (`HELD_SILENCE_MS`, 15s), so constant beeping only happens while a finger is on the button.
+- **`detectTapGestures`, not `combinedClickable`.** A long click reports that the press became long,
+  never that it ended, and the release is what stops a held dictation.
+- **`TextToSpeech` binds asynchronously.** Utterances queued before `onInit` are dropped, so
+  `Speaker` holds them in `awaitingEngine` and flushes on init. Without it the first sentence of the
+  first reply of a session goes missing.
+- Speaking interrupts playback (`speaker.stop()` on dictation start) — barge-in is expected.
+
+## Transcript Rendering
+
+`TurnActivity` is a `sealed interface` (`Thought` / `ToolRun`) persisted as JSON on the message row.
+Gson resolves adapters from the **declared** type, so `gson.toJson(list)` alone erases to
+`ArrayList<Object>`, bypasses the hand-written adapter, writes no `kind` discriminator, and every row
+reads back as an empty `Thought` — which showed up as tool pills vanishing and leaving gaps once a
+reply arrived. Always name the type on both sides:
+
+```kotlin
+gson.toJson(activity, TURN_ACTIVITY_LIST_TYPE)
+gson.fromJson(json, TURN_ACTIVITY_LIST_TYPE)
+```
+
+`RuntimeTypeAdapterFactory` is not in the core Gson artifact, so the discriminator is written by
+hand in `MessageRepositoryImpl`, with a shape-based fallback for rows written before it existed.
+
+## Compose Gotchas
+
+- **`widthIn` must sit outside `fillMaxWidth`.** `Modifier.fillMaxWidth().widthIn(max = 760.dp)`
+  silently ignores the cap; `widthIn(max = 760.dp).fillMaxWidth()` is the working order.
+- **Keyboard insets**: pad with `WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)` plus the
+  scaffold's top padding, rather than consuming `paddingValues` wholesale — otherwise a focused
+  field sits under the IME.
+- **Snackbars go in `Scaffold(snackbarHost = ...)`**, never composed inline in a scrolling column,
+  where the confirmation appears below the fold and is never seen.
+- **Navigation**: `restoreState = true` restores stale arguments for a shared route like
+  `chat/{conversationId}`, so sidebar taps appear to do nothing.
+  `popUpTo(startDestinationId) { inclusive = true }` only pops once; after that entries accumulate
+  with live ViewModels, which is how a stale "Stop the reply?" flag survives. `launchSingleTop` on a chat route reuses the entry and
+  lands the next reply in the wrong conversation.
+- **Never `catch (e: Exception)` around a coroutine body** that can be cancelled —
+  `CancellationException` gets swallowed and the turn cannot be abandoned.
+
 ## Important Notes
 
 - **No PDF text extraction** - no Android-compatible PDF parser on Maven Central
@@ -575,8 +702,9 @@ builds fail at inference time rather than at build time.
   `kotlin { compilerOptions { } }` block
 - **No AGP 9 opt-out flags** - `gradle.properties` carries no `android.newDsl` /
   `android.builtInKotlin` / R8 opt-outs; those escape hatches are removed in AGP 10
-- **Code interpreter sandbox** - `executeJavaScript` uses `Context.initStandardObjects()`, not
-  Rhino's shell `Global`, which would expose `readFile`/`runCommand`/`spawn` to model-written JS
+- **DeX / freeform windows** - `MainActivity` carries `resizeableActivity="true"` and a
+  `configChanges` list covering the resize events. Removing them destroys and recreates the
+  activity on every frame of a window drag. `locale`/`fontScale`/`mcc` are deliberately excluded
 - **Gradle wrapper**: Use `.\gradlew.bat` on Windows
 - **Build cache**: Gradle daemon is used, clean build needed after dependency changes
 
@@ -584,75 +712,124 @@ builds fail at inference time rather than at build time.
 
 ```
 app/src/main/java/com/aiassistant/
-├── AIAssistantApp.kt          # @HiltAndroidApp
-├── MainActivity.kt            # Entry point, EdgeToEdge
+├── AIAssistantApp.kt          # @HiltAndroidApp, WorkManager init, launch-time task reconciliation
+├── MainActivity.kt            # Entry point, EdgeToEdge, resizeableActivity for DeX
+├── client/
+│   └── LlmClient.kt           # main-process side of the :llm boundary
+├── service/
+│   ├── LlmService.kt          # foreground service hosting the engine in :llm
+│   └── LlmIpc.kt              # intent/extra contract between the processes
 ├── di/
 │   ├── AppModule.kt
-│   └── RepositoryBindingModule.kt
+│   ├── RepositoryBindingModule.kt
+│   └── WorkerFactoryModule.kt
 ├── data/
 │   ├── api/
 │   │   ├── OpenAIService.kt
 │   │   └── RetrofitClient.kt
 │   ├── database/
-│   │   ├── AppDatabase.kt
+│   │   ├── AppDatabase.kt     # version 5, enableMultiInstanceInvalidation()
 │   │   ├── ConversationDao.kt
 │   │   ├── MessageDao.kt
-│   │   └── MemoryDao.kt
+│   │   ├── MemoryDao.kt
+│   │   ├── ScheduledTaskDao.kt
+│   │   └── TaskExecutionHistoryDao.kt
+│   ├── llm/
+│   │   └── OnDeviceLlmSettingsManager.kt
 │   ├── model/
-│   │   ├── api/
-│   │   │   ├── ChatCompletionRequest.kt
-│   │   │   ├── ChatCompletionResponse.kt
-│   │   │   ├── EmbeddingResponse.kt
-│   │   │   └── StreamingResponse.kt
+│   │   ├── api/               # ChatCompletionRequest/Response, EmbeddingResponse, StreamingResponse
 │   │   ├── ConversationEntity.kt
 │   │   ├── MemoryEntryEntity.kt
-│   │   └── MessageEntity.kt
-│   └── repository/
-│       ├── ChatRepository.kt
-│       ├── ConversationRepositoryImpl.kt
-│       ├── MessageRepositoryImpl.kt
-│       ├── MemoryRepositoryImpl.kt
-│       ├── SettingsDataRepository.kt
-│       └── SettingsRepository.kt
-├── domain/
-│   ├── model/
-│   │   ├── ChatMessage.kt
-│   │   ├── Conversation.kt
-│   │   └── MemoryEntry.kt
+│   │   ├── MessageEntity.kt
+│   │   ├── ScheduledTaskEntity.kt
+│   │   └── TaskExecutionHistoryEntity.kt
+│   ├── notification/
+│   │   └── NotificationHelper.kt
 │   ├── repository/
-│   │   ├── ChatApiRepository.kt
-│   │   ├── ChatApiRepositoryImpl.kt
-│   │   ├── ConversationRepository.kt
-│   │   ├── MemoryRepository.kt
-│   │   └── MessageRepository.kt
+│   │   ├── ChatRepository.kt
+│   │   ├── ConversationRepositoryImpl.kt
+│   │   ├── MessageRepositoryImpl.kt      # TurnActivity JSON + discriminator
+│   │   ├── MemoryRepositoryImpl.kt
+│   │   ├── OnDeviceEmbeddingRepositoryImpl.kt
+│   │   ├── OnDeviceLlmRepositoryImpl.kt  # HuggingFace model download
+│   │   ├── SettingsDataRepository.kt     # DataStore keys, transactional saveAll()
+│   │   ├── SettingsRepository.kt
+│   │   └── TaskRepositoryImpl.kt
+│   ├── scheduler/
+│   │   └── TaskScheduler.kt
+│   └── worker/
+│       ├── TaskWorker.kt
+│       └── WorkerFactory.kt
+├── domain/
+│   ├── llm/
+│   │   ├── OnDeviceLlmEngine.kt
+│   │   ├── OnDeviceEmbeddingEngine.kt
+│   │   ├── OnDeviceLlmSettings.kt
+│   │   ├── LlmBackend.kt
+│   │   └── GenerationStats.kt
+│   ├── model/
+│   │   ├── ChatMessage.kt     # also Attachment
+│   │   ├── ChatMessageDto.kt
+│   │   ├── Conversation.kt
+│   │   ├── MemoryEntry.kt
+│   │   ├── ScheduledTask.kt
+│   │   ├── TaskExecutionHistory.kt
+│   │   └── TurnActivity.kt
+│   ├── repository/            # interfaces + ChatApiRepositoryImpl
 │   ├── service/
 │   │   ├── ToolManager.kt
-│   │   └── VectorMathService.kt
+│   │   ├── VectorMathService.kt
+│   │   ├── ActiveConversation.kt
+│   │   └── ActiveTurn.kt
+│   ├── speech/
+│   │   ├── Dictation.kt
+│   │   └── Speaker.kt
 │   ├── tool/
-│   │   ├── CalculatorTool.kt
-│   │   ├── CodeInterpreterTool.kt
+│   │   ├── CalendarTool.kt
 │   │   ├── DeviceInfoTool.kt
+│   │   ├── JsonUtils.kt
+│   │   ├── MemoryTools.kt
+│   │   ├── OnDeviceToolExecutor.kt
+│   │   ├── SaveFileTool.kt
+│   │   ├── ScheduledTaskTool.kt
+│   │   ├── SmsTool.kt
+│   │   ├── TermuxShellTool.kt
 │   │   ├── ToolExecutor.kt
+│   │   ├── WeatherTool.kt
 │   │   ├── WebPageFetcherTool.kt
-│   │   ├── WebSearchTool.kt
-│   │   └── WeatherTool.kt
+│   │   └── WebSearchTool.kt
 │   └── usecase/
+│       ├── CronScheduler.kt
 │       ├── MemorySearchUseCase.kt
-│       └── SendChatMessageUseCase.kt
+│       ├── SendChatMessageUseCase.kt
+│       └── TaskExecutor.kt
 ├── presentation/
+│   ├── component/
+│   │   └── StopReplyDialog.kt
 │   ├── navigation/
 │   │   └── AppNavigation.kt
 │   ├── screen/
 │   │   ├── chat/
 │   │   │   ├── ChatScreen.kt
 │   │   │   └── MarkdownText.kt
-│   │   └── settings/
-│   │       └── SettingsScreen.kt
+│   │   ├── conversation/
+│   │   │   └── ConversationListScreen.kt
+│   │   ├── settings/
+│   │   │   └── SettingsScreen.kt
+│   │   └── tasks/
+│   │       └── TaskScreen.kt
 │   └── vm/
 │       ├── ChatViewModel.kt
-│       └── SettingsViewModel.kt
+│       ├── ConversationListViewModel.kt
+│       ├── SettingsViewModel.kt
+│       ├── ShellViewModel.kt
+│       └── TaskViewModel.kt
 └── ui/
     └── theme/
         ├── Theme.kt
         └── Typography.kt
 ```
+
+Helper scripts live in `tools/`: `sideload.sh` pushes a `.litertlm` bundle into the app's model
+directory, `watch.sh` tails the engine logs (`log`), the `:llm` footprint (`mem`), LMK kills
+(`kills`), or clears learned KV capacities (`clearkv`).
