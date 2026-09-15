@@ -172,7 +172,8 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideTaskScheduler(@ApplicationContext context: Context) = TaskScheduler(context)
+    fun provideTaskScheduler(@ApplicationContext context: Context): TaskScheduler =
+        TaskScheduler(context)
 
     @Provides
     @Singleton

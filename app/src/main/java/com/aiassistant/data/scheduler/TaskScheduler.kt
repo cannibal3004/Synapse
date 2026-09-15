@@ -6,6 +6,7 @@ import androidx.work.*
 import com.aiassistant.data.worker.TaskWorker
 import com.aiassistant.domain.model.ScheduleType
 import com.aiassistant.domain.model.ScheduledTask
+import com.aiassistant.domain.scheduler.TaskScheduling
 import com.aiassistant.domain.usecase.CronScheduler
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
@@ -17,12 +18,12 @@ import javax.inject.Singleton
 @Singleton
 class TaskScheduler @Inject constructor(
     @ApplicationContext private val applicationContext: Context
-) {
+) : TaskScheduling {
     companion object {
         private const val TAG = "TaskScheduler"
     }
 
-    fun scheduleTask(task: ScheduledTask) {
+    override fun scheduleTask(task: ScheduledTask) {
         if (!task.isEnabled) return
 
         val workRequest = buildWorkRequest(task)
@@ -37,7 +38,7 @@ class TaskScheduler @Inject constructor(
         Log.d(TAG, "Task '${task.title}' ($uniqueWorkName) scheduled for ${formatSchedule(task)}")
     }
 
-    fun scheduleNow(task: ScheduledTask) {
+    override fun scheduleNow(task: ScheduledTask) {
         val workRequest = OneTimeWorkRequestBuilder<TaskWorker>()
             .setInitialDelay(0, TimeUnit.MILLISECONDS)
             .setConstraints(
@@ -63,7 +64,7 @@ class TaskScheduler @Inject constructor(
         Log.d(TAG, "Task '${task.title}' scheduled for immediate execution")
     }
 
-    fun cancelTask(taskId: String) {
+    override fun cancelTask(taskId: String) {
         WorkManager.getInstance(applicationContext).cancelUniqueWork("task_$taskId")
         Log.d(TAG, "Task $taskId cancellation requested")
     }
