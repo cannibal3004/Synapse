@@ -42,6 +42,15 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    testOptions {
+        unitTests {
+            // Unit tests run against stubbed android.jar, where every method throws by default.
+            // JsonUtils logs a warning on a parse failure, which would otherwise fail the test
+            // rather than the parse.
+            isReturnDefaultValues = true
+        }
+    }
+
     buildFeatures {
         compose = true
     }

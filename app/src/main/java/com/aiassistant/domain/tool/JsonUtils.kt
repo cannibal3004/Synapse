@@ -82,18 +82,28 @@ object JsonUtils {
 
     private fun parseArray(input: String, startPos: Int): Pair<List<Any?>, Int> {
         val result = mutableListOf<Any?>()
-        var pos = startPos
-        val content = extractContent(input, '[', ']') ?: return Pair(emptyList(), pos)
-        
+
+        // Bounded to this array's own closing bracket. extractContent scans to the *last* ']' in
+        // whatever it is handed, which is the wrong one as soon as another array follows.
+        val closeIdx = findClosingBracket(input, startPos, '[', ']')
+        if (closeIdx <= startPos) return Pair(emptyList(), input.length)
+        val content = input.substring(startPos + 1, closeIdx)
+
+        // Indexed from the start of `content`, not of `input`. Walking the extracted substring
+        // with an offset into the original string meant any array that did not begin at index 0
+        // read past its own end and came back empty -- which is what silently emptied
+        // includeDomains and excludeDomains on a web_search call.
+        var pos = 0
         while (pos < content.length) {
             while (pos < content.length && (content[pos].isWhitespace() || content[pos] == ',')) pos++
             if (pos >= content.length) break
-            
+
             val (value, nextPos) = parseValue(content, pos)
             result.add(value)
+            if (nextPos <= pos) break
             pos = nextPos
         }
-        return Pair(result, pos)
+        return Pair(result, closeIdx)
     }
 
     private fun parseValue(input: String, startPos: Int): Pair<Any?, Int> {

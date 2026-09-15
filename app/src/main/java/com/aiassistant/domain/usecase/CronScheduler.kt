@@ -48,10 +48,15 @@ object CronScheduler {
 
     private fun matchesDay(calendar: Calendar, dayExpr: String, dowExpr: String): Boolean {
         val dayOfMonth = calendar.get(Calendar.DAY_OF_MONTH)
-        val dayOfWeek = calendar.get(Calendar.DAY_OF_WEEK)
+        // Cron counts weekdays 0-6 from Sunday; Calendar counts them 1-7 from Sunday. Matching
+        // the raw Calendar value against the expression made every weekday task fire a day early
+        // -- "30 7 * * 1", which the tool description promises is Monday, ran on Sunday.
+        val cronDayOfWeek = calendar.get(Calendar.DAY_OF_WEEK) - 1
 
         val dayMatch = matchesField(dayOfMonth, dayExpr, 1, 31)
-        val dowMatch = matchesField(dayOfWeek, dowExpr, 1, 7)
+        // 7 is also Sunday by convention, so both spellings work.
+        val dowMatch = matchesField(cronDayOfWeek, dowExpr, 0, 6) ||
+                (cronDayOfWeek == 0 && matchesField(7, dowExpr, 0, 7))
 
         return if (dayExpr == "*" && dowExpr == "*") {
             true
