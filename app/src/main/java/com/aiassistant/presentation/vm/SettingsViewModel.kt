@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
+import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 
 data class SettingsUiState(
     val apiKey: String? = null,
@@ -27,17 +28,17 @@ data class SettingsUiState(
     val systemPrompt: String? = null,
     val embeddingModel: String? = "text-embedding-3-small",
     val exaApiKey: String? = null,
+    val maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
     val onDeviceSettings: OnDeviceLlmSettings? = null,
     val isSaved: Boolean = false
 )
 
 const val DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant with access to tools. You can:
 - Search the web using 'web_search' tool
-- Calculate math using 'calculator' tool
 - Get weather using 'weather' tool
 - Fetch web pages using 'web_fetch' tool
-- Run JavaScript using 'code_interpreter' tool
 - Get device info using 'device_info' tool
+- Run any shell command, script or calculation using 'termux_shell' tool
 
 Current date and time: [CURRENT_DATE_TIME]
 
@@ -71,6 +72,7 @@ class SettingsViewModel @Inject constructor(
                 systemPrompt = appSettings.systemPrompt,
                 embeddingModel = appSettings.embeddingModel,
                 exaApiKey = savedExaKey ?: appSettings.exaApiKey,
+                maxToolRounds = appSettings.maxToolRounds,
                 onDeviceSettings = onDeviceSettings,
                 isSaved = false
             )
@@ -87,15 +89,22 @@ class SettingsViewModel @Inject constructor(
         defaultModel: String?,
         systemPrompt: String?,
         embeddingModel: String?,
-        exaApiKey: String?
+        exaApiKey: String?,
+        maxToolRounds: Int?
     ) {
         viewModelScope.launch {
-            apiKey?.let { settingsRepository.saveApiKey(it) }
-            apiBaseUrl?.let { settingsRepository.saveApiBaseUrl(it) }
-            defaultModel?.let { settingsRepository.saveDefaultModel(it) }
-            systemPrompt?.let { settingsRepository.saveSystemPrompt(it) }
-            embeddingModel?.let { settingsRepository.saveEmbeddingModel(it) }
-            exaApiKey?.let { settingsRepository.saveExaApiKey(it) }
+            // Nulls are passed through rather than skipped. Each one used to mean "leave
+            // this key alone", which is indistinguishable from "the user cleared this field"
+            // -- so emptying a box and saving put the old value straight back.
+            settingsRepository.saveAll(
+                apiKey = apiKey,
+                apiBaseUrl = apiBaseUrl,
+                defaultModel = defaultModel,
+                systemPrompt = systemPrompt,
+                embeddingModel = embeddingModel,
+                exaApiKey = exaApiKey,
+                maxToolRounds = maxToolRounds
+            )
 
             sharedPreferences.edit().apply {
                 if (exaApiKey != null) {

@@ -2,6 +2,35 @@ package com.aiassistant.data.model.api
 
 import com.google.gson.annotations.SerializedName
 
+/**
+ * One `data:` frame of a streamed completion.
+ *
+ * Every field is nullable because providers differ in what they put in the first and last
+ * frames -- an empty `choices` list, a usage-only frame, and role-only deltas are all normal.
+ */
+data class ChatCompletionChunk(
+    val id: String? = null,
+    val model: String? = null,
+    val choices: List<StreamingChoice>? = null,
+    val usage: StreamingUsage? = null
+)
+
+/** What a streamed round reports to its caller. */
+sealed interface StreamEvent {
+    /** Text as it arrives. Deltas are fragments, not whole lines. */
+    data class Delta(val text: String) : StreamEvent
+
+    /** Reasoning as it arrives, for models that report it separately from the answer. */
+    data class Reasoning(val text: String) : StreamEvent
+
+    /** End of the round, with everything reassembled. */
+    data class Complete(
+        val content: String,
+        val toolCalls: List<ToolCall>,
+        val finishReason: String?
+    ) : StreamEvent
+}
+
 data class StreamingChoice(
     val index: Int,
     val delta: Delta,
@@ -11,7 +40,12 @@ data class StreamingChoice(
 data class Delta(
     val role: String?,
     val content: String?,
-    val tool_calls: List<ToolCallDelta>?
+    val tool_calls: List<ToolCallDelta>?,
+    /**
+     * Reasoning, kept out of `content` by the server rather than wrapped in `<think>` tags.
+     * llama.cpp and several hosted providers do this; those that do not simply never set it.
+     */
+    val reasoning_content: String? = null
 )
 
 data class ToolCallDelta(

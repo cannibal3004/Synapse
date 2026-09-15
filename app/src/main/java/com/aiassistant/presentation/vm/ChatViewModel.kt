@@ -9,6 +9,14 @@ import androidx.lifecycle.viewModelScope
 import com.aiassistant.data.llm.OnDeviceLlmSettingsManager
 import com.aiassistant.data.model.api.ChatMessage as ApiChatMessage
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
+import com.aiassistant.domain.service.ActiveConversation
+import com.aiassistant.domain.service.ActiveTurn
+import com.aiassistant.domain.speech.Dictation
+import com.aiassistant.domain.speech.Speaker
+import com.aiassistant.domain.tool.formatMemoryContext
+import com.aiassistant.data.model.api.StreamEvent
+import com.aiassistant.domain.model.TurnActivity
+import com.aiassistant.domain.usecase.MemorySearchUseCase
 import com.aiassistant.data.repository.SettingsDataRepository
 import com.aiassistant.domain.llm.OnDeviceLlmEngine
 import com.aiassistant.domain.model.Attachment
@@ -19,7 +27,6 @@ import com.aiassistant.domain.repository.ChatApiRepository
 import com.aiassistant.domain.repository.ConversationRepository
 import com.aiassistant.domain.repository.MessageRepository
 import com.aiassistant.domain.service.ToolManager
-import com.aiassistant.domain.tool.OnDeviceToolExecutor
 import com.aiassistant.domain.tool.ToolExecutor
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.gson.Gson
@@ -32,12 +39,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.format.DateTimeFormatter
 import java.time.ZonedDateTime
 import javax.inject.Inject
+import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
@@ -51,8 +61,19 @@ data class ChatUiState(
     val isOnDeviceMode: Boolean = false,
     val onDeviceDownloading: Boolean = false,
     val onDeviceDownloadProgress: Float = 0f,
-    val onDeviceEngineReady: Boolean = false
+    val onDeviceEngineReady: Boolean = false,
+    /** What the model did this turn, in order. Reasoning and tool calls interleaved. */
+    val activity: List<TurnActivity> = emptyList(),
+    val onDeviceStats: String? = null,
+    /** The reply as far as it has arrived, shown until the finished message is persisted. */
+    val streamingResponse: String? = null,
+    val onDeviceCapabilities: OnDeviceLlmEngine.ModelCapabilities? = null,
+    /** Bundle filename in on-device mode; the cloud model name is [model]. */
+    val onDeviceModelName: String = "",
+    val conversationTitle: String = ""
 )
+
+private const val MEMORY_INJECTION_LIMIT = 5
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
@@ -63,26 +84,71 @@ class ChatViewModel @Inject constructor(
     private val settingsRepository: SettingsDataRepository,
     private val onDeviceLlmRepository: OnDeviceLlmRepository,
     private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
+    private val memorySearchUseCase: MemorySearchUseCase,
+    private val activeConversation: ActiveConversation,
+    private val activeTurn: ActiveTurn,
+    private val speaker: Speaker,
+    val dictation: Dictation,
     @ApplicationContext private val applicationContext: Context
 ) : ViewModel() {
 
     private val _apiKey = MutableStateFlow<String?>(null)
     private val _baseUrl = MutableStateFlow<String?>(null)
     private val _systemPrompt = MutableStateFlow<String?>(null)
+    private val _maxToolRounds = MutableStateFlow(DEFAULT_MAX_TOOL_ROUNDS)
     private val _model = MutableStateFlow("")
     private val _isOnDeviceMode = MutableStateFlow(false)
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    /**
+     * Whether replies are read aloud. Kept in preferences rather than per conversation: it is a
+     * property of how you are using the phone right now -- driving, cooking -- not of the chat.
+     */
+    private val speechPrefs by lazy {
+        applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+    }
+    private val _speakReplies = MutableStateFlow(speechPrefs.getBoolean("speak_replies", false))
+    val speakReplies: StateFlow<Boolean> = _speakReplies.asStateFlow()
+
+    fun toggleSpeakReplies() {
+        val next = !_speakReplies.value
+        _speakReplies.value = next
+        speechPrefs.edit().putBoolean("speak_replies", next).apply()
+        if (!next) speaker.stop()
+    }
+
+    /**
+     * @param continuous true while the microphone button is held, so pauses do not end it.
+     */
+    fun startDictation(continuous: Boolean) {
+        // Barge-in: talking over the reply is the thing people do, and expect to work.
+        speaker.stop()
+        dictation.start(continuous)
+    }
+
+    fun stopDictation() = dictation.stop()
+
     private val gson = Gson()
-    private val onDeviceToolExecutor = OnDeviceToolExecutor(applicationContext)
 
     init {
         Log.d("ChatViewModel", "ViewModel initialized")
         loadSettings()
         loadOnDeviceSettings()
         observeOnDeviceState()
+        backfillMemoryEmbeddings()
+    }
+
+    /**
+     * Gives vectors to memories stored before an embedding model was configured, so they become
+     * findable. A no-op when embeddings are disabled or nothing is missing; capped per run.
+     */
+    private fun backfillMemoryEmbeddings() {
+        viewModelScope.launch {
+            runCatching { memorySearchUseCase.backfillEmbeddings() }
+                .onFailure { Log.w("ChatViewModel", "Memory backfill failed", it) }
+        }
     }
 
     private fun loadSettings() {
@@ -91,6 +157,7 @@ class ChatViewModel @Inject constructor(
                 _apiKey.value = settings.apiKey
                 _baseUrl.value = settings.apiBaseUrl
                 _systemPrompt.value = settings.systemPrompt
+                _maxToolRounds.value = settings.maxToolRounds
                 _model.value = settings.defaultModel ?: ""
                 Log.d("ChatViewModel", "Settings loaded: baseUrl=${settings.apiBaseUrl}, model=${settings.defaultModel}")
             }
@@ -101,6 +168,12 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             onDeviceLlmSettingsManager.settings.collect { settings ->
                 _isOnDeviceMode.value = settings.enabled
+                // isOnDeviceMode has been on ChatUiState since it was written and was never
+                // assigned, so anything reading it saw false regardless of the setting.
+                _uiState.value = _uiState.value.copy(
+                    isOnDeviceMode = settings.enabled,
+                    onDeviceModelName = settings.modelName
+                )
                 Log.d("ChatViewModel", "On-device settings loaded: enabled=${settings.enabled}")
             }
         }
@@ -112,6 +185,7 @@ class ChatViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(
                     onDeviceDownloading = state.isLoading,
                     onDeviceEngineReady = state.isReady,
+                    onDeviceCapabilities = state.capabilities,
                     error = state.error
                 )
                 Log.d("ChatViewModel", "On-device state: ready=${state.isReady}, loading=${state.isLoading}")
@@ -119,10 +193,39 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The reply being generated, if there is one.
+     *
+     * Held so that leaving the conversation can stop it. Not every switch destroys this
+     * ViewModel -- the overflow menu's "New conversation" resets in place -- and a turn that
+     * outlives its conversation goes on writing its stream, its activity row and finally its
+     * whole transcript into whatever is on screen by then.
+     */
+    private var turnJob: Job? = null
+
+    /**
+     * Abandons the turn in flight.
+     *
+     * The reply is dropped rather than finished in the background: tool provenance is a single
+     * process-wide value and the on-device engine is one instance, so two turns running at once
+     * would write over each other in ways a stray UI update would be the least of. Anything
+     * already persisted stays; the conversation keeps the question without an answer, which is
+     * also what a crash mid-reply leaves behind.
+     */
+    private fun cancelActiveTurn() {
+        speaker.stop()
+        turnJob?.cancel()
+        turnJob = null
+        // Not only in the coroutine's finally: a job cancelled before its body was ever
+        // dispatched has no finally to run, and the flag would stay set for good.
+        activeTurn.end(this)
+    }
+
     fun createNewConversation(
         systemPrompt: String? = null,
         persistToDb: Boolean = true
     ) {
+        cancelActiveTurn()
         viewModelScope.launch {
             try {
                 Log.d("ChatViewModel", "Creating new conversation with model=${_model.value}, persistToDb=$persistToDb")
@@ -137,9 +240,17 @@ class ChatViewModel @Inject constructor(
                         conversationId = id,
                         isNewConversation = false,
                         messages = emptyList(),
+                        // Cleared, not set to the placeholder row title: the top bar shows its
+                        // own "New conversation" until the first message names this one.
+                        conversationTitle = "",
                         systemPrompt = systemPrompt,
                         model = _model.value,
-                        pendingAttachments = emptyList()
+                        pendingAttachments = emptyList(),
+                        activity = emptyList(),
+                        streamingResponse = null,
+                        onDeviceStats = null,
+                        error = null,
+                        isLoading = false
                     )
                     Log.d("ChatViewModel", "Conversation created: $id")
                 } else {
@@ -147,9 +258,15 @@ class ChatViewModel @Inject constructor(
                         conversationId = null,
                         isNewConversation = true,
                         messages = emptyList(),
+                        conversationTitle = "",
                         systemPrompt = systemPrompt,
                         model = _model.value,
-                        pendingAttachments = emptyList()
+                        pendingAttachments = emptyList(),
+                        activity = emptyList(),
+                        streamingResponse = null,
+                        onDeviceStats = null,
+                        error = null,
+                        isLoading = false
                     )
                     _systemPrompt.value = systemPrompt
                     Log.d("ChatViewModel", "New conversation created in memory only")
@@ -164,6 +281,7 @@ class ChatViewModel @Inject constructor(
     }
 
     fun loadConversation(conversationId: String) {
+        cancelActiveTurn()
         viewModelScope.launch {
             try {
                 Log.d("ChatViewModel", "Loading conversation: $conversationId")
@@ -171,9 +289,19 @@ class ChatViewModel @Inject constructor(
                 val messages = messageRepository.getMessagesSync(conversationId)
                 _uiState.value = _uiState.value.copy(
                     conversationId = conversationId,
+                    isNewConversation = false,
                     messages = messages,
                     systemPrompt = conversation?.systemPrompt,
-                    model = conversation?.model ?: _model.value
+                    model = conversation?.model ?: _model.value,
+                    conversationTitle = conversation?.title.orEmpty(),
+                    // Whatever the last turn was doing belonged to the conversation we just
+                    // left. Carried over, its activity row hangs above the first message of
+                    // this one.
+                    activity = emptyList(),
+                    streamingResponse = null,
+                    onDeviceStats = null,
+                    error = null,
+                    isLoading = false
                 )
                 _systemPrompt.value = conversation?.systemPrompt
             } catch (e: Exception) {
@@ -230,7 +358,15 @@ class ChatViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
+        // A conversation on its first message has no title yet -- one is generated from that
+        // message a moment later, inside the turn. Generate it here too rather than let the
+        // dialog fall back to "this conversation" for exactly the case where the user is most
+        // likely to be starting another chat.
+        activeTurn.begin(
+            this,
+            _uiState.value.conversationTitle.ifBlank { generateTitleFromMessage(userMessage) }
+        )
+        turnJob = viewModelScope.launch {
             val tempConversationId = _uiState.value.conversationId ?: "temp_new_${System.currentTimeMillis()}"
             val userMsg = ChatMessage(
                 id = "temp_${System.currentTimeMillis()}",
@@ -258,42 +394,68 @@ class ChatViewModel @Inject constructor(
                     )
                     _uiState.value = _uiState.value.copy(
                         conversationId = effectiveConversationId,
-                        isNewConversation = false
+                        isNewConversation = false,
+                        conversationTitle = title
                     )
                     Log.d("ChatViewModel", "Persisted new conversation: $effectiveConversationId")
                 } else {
                     effectiveConversationId = tempConversationId!!
                 }
 
-                messageRepository.addMessage(
+                val userMessageId = messageRepository.addMessage(
                     conversationId = effectiveConversationId,
                     role = "user",
                     content = userMessage
                 )
 
+                // Tools receive only their arguments, so remember_fact reads provenance here.
+                activeConversation.set(effectiveConversationId)
+
                 val assistantContent = if (_isOnDeviceMode.value) {
                     getOnDeviceResponse(effectiveConversationId, userMessage, attachments)
                 } else {
-                    getCloudResponse(effectiveConversationId, userMessage, attachments)
+                    getCloudResponse(
+                        effectiveConversationId,
+                        userMessage,
+                        attachments,
+                        userMessageId
+                    )
                 }
 
                 messageRepository.addMessage(
                     conversationId = effectiveConversationId,
                     role = "assistant",
-                    content = assistantContent
+                    content = assistantContent,
+                    activity = _uiState.value.activity
                 )
 
                 val updatedMessages = messageRepository.getMessagesSync(effectiveConversationId)
                 _uiState.value = _uiState.value.copy(
                     messages = updatedMessages,
-                    isLoading = false
+                    isLoading = false,
+                    streamingResponse = null,
+                    activity = emptyList()
                 )
+            } catch (e: CancellationException) {
+                // Leaving the conversation, not a failure. Rethrow so the coroutine actually
+                // ends -- swallowing it here raised an error banner on the screen the user had
+                // just moved to.
+                Log.d("ChatViewModel", "Turn abandoned for $tempConversationId")
+                throw e
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Error sending message", e)
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    error = "Error: ${e.message}"
+                    error = "Error: ${e.message}",
+                    streamingResponse = null
                 )
+            } finally {
+                // Runs on cancellation too, which is the case that matters: a flag left set
+                // would have the shell asking about a reply that stopped long ago.
+                activeTurn.end(this@ChatViewModel)
+                // Whatever is left in the buffer is a sentence the user would otherwise never
+                // hear. On cancellation there is nothing more coming either way.
+                if (_speakReplies.value) speaker.flush()
             }
         }
     }
@@ -328,7 +490,12 @@ class ChatViewModel @Inject constructor(
             temperature = onDeviceSettings.temperature,
             topK = onDeviceSettings.topK,
             topP = onDeviceSettings.topP,
-            useTools = true
+            useTools = true,
+            enableThinking = onDeviceSettings.enableThinking,
+            thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+            maxOutputTokens = onDeviceSettings.maxOutputTokens,
+            backend = onDeviceSettings.backend,
+            contextTokens = onDeviceSettings.contextTokens
         )
 
         val initResult = if (needsReinit) {
@@ -338,7 +505,12 @@ class ChatViewModel @Inject constructor(
                 temperature = onDeviceSettings.temperature,
                 topK = onDeviceSettings.topK,
                 topP = onDeviceSettings.topP,
-                useTools = true
+                useTools = true,
+                enableThinking = onDeviceSettings.enableThinking,
+                thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                backend = onDeviceSettings.backend,
+                contextTokens = onDeviceSettings.contextTokens
             )
         } else {
             Result.success(Unit)
@@ -353,18 +525,32 @@ class ChatViewModel @Inject constructor(
             .toMutableList()
 
         onDeviceLlmRepository.resetConversation()
+        _uiState.value = _uiState.value.copy(
+            activity = emptyList(),
+            onDeviceStats = null,
+            streamingResponse = null
+        )
 
         var fullResponse = ""
         var chatError: String? = null
+        // Channel content streams in as many small deltas (1124 chars over 229 events for a
+        // one-word prompt), so it has to accumulate rather than replace.
+        val thinkingText = StringBuilder()
 
         withContext(Dispatchers.IO) {
-            onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
+            onDeviceLlmRepository.chatStream(domainMessages, _maxToolRounds.value)
+                .collect { event ->
                 when (event) {
                     is OnDeviceLlmEngine.ChatEvent.Chunk -> {
+                        if (_speakReplies.value) speaker.feed(event.text)
                         fullResponse += event.text
+                        _uiState.value = _uiState.value.copy(streamingResponse = fullResponse)
                     }
+                    is OnDeviceLlmEngine.ChatEvent.Thinking -> recordThought(event.text)
                     is OnDeviceLlmEngine.ChatEvent.Done -> {
                         fullResponse = event.response
+                        _uiState.value =
+                            _uiState.value.copy(onDeviceStats = event.stats?.summary())
                     }
                     is OnDeviceLlmEngine.ChatEvent.Error -> {
                         chatError = event.error
@@ -383,11 +569,16 @@ class ChatViewModel @Inject constructor(
     private suspend fun getCloudResponse(
         conversationId: String,
         userMessage: String,
-        attachments: List<Attachment>
+        attachments: List<Attachment>,
+        userMessageId: String
     ): String {
         val (content, apiAttachments) = processAttachments(userMessage, attachments)
 
-        val history = buildApiMessages(conversationId)
+        // The turn is already persisted by the time we get here, so the replay has to leave it
+        // out -- it was going out twice, once as the stored plain text and once as the copy
+        // built below. The copy is the one worth sending: it carries the images and any text
+        // pulled out of an attached document, neither of which is in the stored content.
+        val history = buildApiMessages(conversationId, userMessage, skipMessageId = userMessageId)
 
         val userApiMessage = if (apiAttachments.isNotEmpty()) {
             val contentList = mutableListOf<Map<String, Any>>()
@@ -403,22 +594,43 @@ class ChatViewModel @Inject constructor(
         history.add(userApiMessage)
 
         val tools = ToolManager.buildToolDefinitions()
-        var assistantContent = ""
         var round = 0
-        val maxRounds = 10
+        val maxRounds = _maxToolRounds.value
         var toolCalls: List<com.aiassistant.data.model.api.ToolCall>? = null
 
+        // Accumulated across rounds rather than taken from the last one: whatever was streamed
+        // has already been shown, so the persisted message has to include it or the reply
+        // changes when it lands.
+        val streamed = StringBuilder()
+        _uiState.value = _uiState.value.copy(streamingResponse = null, activity = emptyList())
+
         do {
-            val response = chatApiRepository.sendChatRequest(
+            var roundToolCalls: List<com.aiassistant.data.model.api.ToolCall> = emptyList()
+            var roundContent = ""
+
+            chatApiRepository.streamChatCompletion(
                 apiKey = _apiKey.value ?: "",
                 model = _model.value,
                 baseUrl = _baseUrl.value,
                 messages = history,
                 tools = tools
-            )
+            ).collect { event ->
+                when (event) {
+                    is StreamEvent.Delta -> {
+                        if (_speakReplies.value) speaker.feed(event.text)
+                        streamed.append(event.text)
+                        _uiState.value =
+                            _uiState.value.copy(streamingResponse = streamed.toString())
+                    }
+                    is StreamEvent.Reasoning -> recordThought(event.text)
+                    is StreamEvent.Complete -> {
+                        roundToolCalls = event.toolCalls
+                        roundContent = event.content
+                    }
+                }
+            }
 
-            val assistantMessage = response.choices.firstOrNull()?.message
-            toolCalls = assistantMessage?.tool_calls
+            toolCalls = roundToolCalls.ifEmpty { null }
 
             if (toolCalls != null && toolCalls.isNotEmpty()) {
                 val domainToolCalls = toolCalls.map {
@@ -429,12 +641,7 @@ class ChatViewModel @Inject constructor(
                     )
                 }
 
-                messageRepository.addMessageWithToolCalls(
-                    conversationId = conversationId,
-                    role = "assistant",
-                    content = "",
-                    toolCalls = gson.toJson(domainToolCalls)
-                )
+                val runsStartAt = recordToolRuns(domainToolCalls)
 
                 val toolResults = withContext(Dispatchers.IO) {
                     domainToolCalls.map { toolCall ->
@@ -447,6 +654,20 @@ class ChatViewModel @Inject constructor(
                     }
                 }
 
+                recordToolResults(runsStartAt, toolResults)
+
+                // The assistant turn that asked for the calls has to precede their results.
+                // The protocol pairs every tool message with the tool_calls that produced it, and
+                // a strict endpoint rejects a tool message that answers nothing -- which reads as
+                // a model failure rather than a malformed request.
+                history.add(
+                    ApiChatMessage(
+                        role = "assistant",
+                        content = roundContent.ifBlank { null },
+                        tool_calls = toolCalls
+                    )
+                )
+
                 toolResults.forEach { result ->
                     history.add(
                         ApiChatMessage(
@@ -458,12 +679,76 @@ class ChatViewModel @Inject constructor(
                 }
 
                 round++
-            } else {
-                assistantContent = assistantMessage?.content ?: ""
             }
         } while (toolCalls != null && toolCalls.isNotEmpty() && round < maxRounds)
 
-        return assistantContent
+        return streamed.toString()
+    }
+
+    /**
+     * Retrieves stored facts relevant to [query] for injection into the prompt.
+     *
+     * Ranking is required here: unranked recent memories would be noise, so this returns null
+     * rather than falling back when embeddings are unavailable. The model can still search
+     * deliberately with the recall_facts tool.
+     */
+    /** Appends reasoning, merging into the previous thought so a run of deltas is one entry. */
+    private fun recordThought(text: String) {
+        val current = _uiState.value.activity
+        val last = current.lastOrNull()
+        val updated = if (last is TurnActivity.Thought) {
+            current.dropLast(1) + TurnActivity.Thought(last.text + text)
+        } else {
+            current + TurnActivity.Thought(text)
+        }
+        _uiState.value = _uiState.value.copy(activity = updated)
+    }
+
+    /** Returns where this round's runs start, so their results can be filled in after. */
+    private fun recordToolRuns(calls: List<com.aiassistant.domain.model.ToolCall>): Int {
+        val startIndex = _uiState.value.activity.size
+        _uiState.value = _uiState.value.copy(
+            activity = _uiState.value.activity +
+                calls.map { TurnActivity.ToolRun(it.name, it.arguments) }
+        )
+        return startIndex
+    }
+
+    /**
+     * Attaches each result to the run that produced it.
+     *
+     * By index rather than by name: two calls to the same tool in one round are ordinary, and
+     * matching on name would pair them up wrongly. Nothing is appended to the activity between
+     * the runs going in and the results coming back, so the offsets still line up.
+     */
+    private fun recordToolResults(
+        startIndex: Int,
+        results: List<com.aiassistant.domain.model.ToolResult>
+    ) {
+        val activity = _uiState.value.activity.toMutableList()
+        results.forEachIndexed { offset, result ->
+            val run = activity.getOrNull(startIndex + offset) as? TurnActivity.ToolRun
+                ?: return@forEachIndexed
+            activity[startIndex + offset] = run.copy(result = result.result)
+        }
+        _uiState.value = _uiState.value.copy(activity = activity)
+    }
+
+    private suspend fun memoryContextFor(query: String): String? {
+        val memories = runCatching {
+            memorySearchUseCase.getRelevantMemories(
+                query = query,
+                limit = MEMORY_INJECTION_LIMIT,
+                fallbackToRecent = false
+            )
+        }.getOrElse { error ->
+            Log.w("ChatViewModel", "Memory retrieval failed", error)
+            return null
+        }
+        if (memories.isNotEmpty()) {
+            Log.d("ChatViewModel", "Injecting ${memories.size} stored fact(s)")
+        }
+        return formatMemoryContext(memories)
     }
 
     private suspend fun processAttachments(
@@ -542,7 +827,12 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun buildApiMessages(conversationId: String): MutableList<ApiChatMessage> {
+    private suspend fun buildApiMessages(
+        conversationId: String,
+        query: String,
+        /** Excluded from the replay; the caller sends its own version of this message. */
+        skipMessageId: String? = null
+    ): MutableList<ApiChatMessage> {
         val history = mutableListOf<ApiChatMessage>()
 
         val zdt = java.time.ZonedDateTime.now()
@@ -550,9 +840,11 @@ class ChatViewModel @Inject constructor(
         val effectivePrompt = (_systemPrompt.value ?: DEFAULT_SYSTEM_PROMPT).replace("[CURRENT_DATE_TIME]", currentDateTime)
         history.add(ApiChatMessage("system", effectivePrompt))
 
+        memoryContextFor(query)?.let { history.add(ApiChatMessage("system", it)) }
+
         val messages = messageRepository.getMessagesSync(conversationId)
         messages.forEach { msg ->
-            if (msg.content.isNotBlank()) {
+            if (msg.id != skipMessageId && msg.content.isNotBlank()) {
                 history.add(
                     ApiChatMessage(
                         role = msg.role.name.lowercase(),
@@ -581,12 +873,18 @@ class ChatViewModel @Inject constructor(
 
     fun clearMessages() {
         val currentConversationId = _uiState.value.conversationId ?: return
+        // A reply still running would write itself straight back into the transcript that was
+        // just emptied, and reload the deleted messages along with it.
+        cancelActiveTurn()
         viewModelScope.launch {
             try {
                 messageRepository.deleteMessages(currentConversationId)
                 _uiState.value = _uiState.value.copy(
                     messages = emptyList(),
-                    error = null
+                    error = null,
+                    isLoading = false,
+                    streamingResponse = null,
+                    activity = emptyList()
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(

@@ -7,11 +7,17 @@ import kotlinx.parcelize.Parcelize
 data class ChatMessageDto(
     val role: String,
     val content: String,
+    // Carried across the process boundary so the on-device engine can attribute stored memories.
+    val conversationId: String = "",
     val attachments: List<AttachmentDto> = emptyList(),
     val toolCalls: List<ToolCallDto>? = null,
     val toolResults: List<ToolResultDto>? = null
 ) : Parcelable {
-    fun toChatMessage(id: String = "", conversationId: String = "", timestamp: Long = System.currentTimeMillis()): ChatMessage {
+    fun toChatMessage(
+        id: String = "",
+        conversationId: String = this.conversationId,
+        timestamp: Long = System.currentTimeMillis()
+    ): ChatMessage {
         return ChatMessage(
             id = id,
             conversationId = conversationId,
@@ -29,6 +35,7 @@ data class ChatMessageDto(
             return ChatMessageDto(
                 role = msg.role.name,
                 content = msg.content,
+                conversationId = msg.conversationId,
                 attachments = msg.attachments.map { AttachmentDto.fromAttachment(it) },
                 toolCalls = msg.toolCalls?.map { ToolCallDto.fromToolCall(it) },
                 toolResults = msg.toolResults?.map { ToolResultDto.fromToolResult(it) }

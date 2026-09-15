@@ -210,7 +210,7 @@ class TaskViewModel @Inject constructor(
                     taskScheduler.scheduleTask(task)
                 } else {
                     val taskId = taskRepository.insertTask(task)
-                    taskScheduler.scheduleTask(task)
+                    taskScheduler.scheduleTask(task.copy(id = taskId))
                 }
 
                 hideCreateTask()

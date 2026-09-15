@@ -58,7 +58,7 @@ class WeatherTool @Inject constructor() {
             val geoRequest = Request.Builder().url(geoUrl).build()
             val geoResponse = httpClient.newCall(geoRequest).execute()
             Log.d(TAG, "Geo response code: ${geoResponse.code}")
-            val geoBody = geoResponse.body?.string() ?: "{}"
+            val geoBody = geoResponse.body.string()
             Log.d(TAG, "Geo response: $geoBody")
             val geoJson = com.google.gson.JsonParser.parseString(geoBody)
 
@@ -80,7 +80,7 @@ class WeatherTool @Inject constructor() {
             val weatherRequest = Request.Builder().url(weatherUrl).build()
             val weatherResponse = httpClient.newCall(weatherRequest).execute()
             Log.d(TAG, "Weather response code: ${weatherResponse.code}")
-            val weatherBody = weatherResponse.body?.string() ?: "{}"
+            val weatherBody = weatherResponse.body.string()
             Log.d(TAG, "Weather response: $weatherBody")
             val weatherJson = com.google.gson.JsonParser.parseString(weatherBody)
 

@@ -30,7 +30,12 @@ class TaskRepositoryImpl @Inject constructor(
     }
 
     override suspend fun insertTask(task: ScheduledTask): String {
-        val id = UUID.randomUUID().toString()
+        // The task's own id, not a fresh one. Minting a second id here meant the row went in
+        // under one id while the caller went on to schedule the work under another, so the
+        // worker woke at the right time, looked up a task that did not exist, and failed --
+        // silently, since nothing owns an id that is not in the table. ScheduledTask already
+        // defaults its id to a UUID, so there was never anything to invent.
+        val id = task.id
         val now = System.currentTimeMillis()
         val entity = ScheduledTaskEntity(
             id = id,

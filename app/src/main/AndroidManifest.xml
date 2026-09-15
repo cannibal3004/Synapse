@@ -9,16 +9,35 @@
         <package android:name="com.termux" />
     </queries>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.BATTERY_STATS" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Attachments can come from the camera, but the app is fully usable without one. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+        Phone access for the calendar and sms tools. All runtime permissions: nothing is read or
+        sent until the user grants them from Settings, and each tool reports the refusal rather
+        than failing silently.
+
+        READ_SMS and SEND_SMS are restricted on Google Play, which grants them only to an app the
+        user has set as their default SMS handler. That is fine for a sideloaded personal build
+        and would have to be answered before any store listing.
+    -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Dictation. Asked for at the moment the microphone button is first pressed. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-       <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:name=".AIAssistantApp"
@@ -31,7 +50,30 @@
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Synapse"
-        tools:targetApi="35">
+        tools:targetApi="37">
+
+        <!--
+            LiteRT-LM's GPU backend dlopens OpenCL. Since Android 12 a vendor native library must
+            be declared here or the load fails even when it exists and is listed in
+            /vendor/etc/public.libraries.txt. That is what "Can not find OpenCL library on this
+            device" actually means. required=false so the app still installs where it is absent.
+        -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL_adreno.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
+        <uses-native-library android:name="libGLES_mali.so" android:required="false" />
+
+        <!--
+            Samsung DeX. The first keeps the app's own density when it moves between the phone
+            screen and the desktop instead of being relaunched; the second keeps the process
+            alive across that move. Both are no-ops on non-Samsung devices.
+        -->
+        <meta-data
+            android:name="com.samsung.android.keepalive.density"
+            android:value="true" />
+        <meta-data
+            android:name="com.samsung.android.multidisplay.keep_process_alive"
+            android:value="true" />
 
         <provider
             android:name="androidx.startup.InitializationProvider"
@@ -42,10 +84,34 @@
                 tools:node="remove" />
         </provider>
 
+        <!--
+            resizeableActivity and configChanges are what make this usable in Samsung DeX and
+            in any freeform window. Without the configChanges list the activity is destroyed and
+            recreated on every frame of a window drag, which reads as the app flickering and
+            losing its place while you resize. Compose reads the new Configuration either way,
+            so handling these here costs nothing and removes the churn.
+
+            Deliberately absent: locale, fontScale, mcc/mnc. Those are not resize events and are
+            better served by the default recreate, which re-resolves resources for them.
+        -->
         <activity
             android:name=".MainActivity"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true"
+            android:resizeableActivity="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|density|keyboard|keyboardHidden|navigation|uiMode"
             android:theme="@style/Theme.Synapse">
+            <!--
+                The size a freeform window opens at, and how small it may be dragged. The default
+                is wide enough for the sidebar layout; the minimum is a phone-width window, which
+                falls back to the single-pane UI.
+            -->
+            <layout
+                android:defaultWidth="1100dp"
+                android:defaultHeight="760dp"
+                android:gravity="center"
+                android:minWidth="360dp"
+                android:minHeight="480dp" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -62,12 +128,22 @@
                 android:resource="@xml/provider_paths" />
         </provider>
 
+        <!--
+            specialUse, not dataSync: this is on-device model inference, not a data transfer.
+            dataSync is capped at 6 cumulative hours per 24h from Android 15 (which this app
+            targets) and cannot be started from BOOT_COMPLETED. The subtype below is what the
+            Play Console review reads.
+        -->
         <service
             android:name=".service.LlmService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync"
-            android:process=":llm" />
+            android:foregroundServiceType="specialUse"
+            android:process=":llm">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="on_device_llm_inference" />
+        </service>
 
     </application>
 

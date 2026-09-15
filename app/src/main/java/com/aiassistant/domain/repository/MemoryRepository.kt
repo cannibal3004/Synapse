@@ -11,4 +11,6 @@ interface MemoryRepository {
     suspend fun deleteMemories(conversationId: String)
     suspend fun getSimilarMemories(query: String, limit: Int = 5): List<MemoryEntry>
     suspend fun addMemoryFromText(content: String, conversationId: String, embedding: List<Float>)
+    suspend fun getMemoriesWithoutEmbedding(limit: Int): List<MemoryEntry>
+    suspend fun updateEmbedding(id: String, embedding: List<Float>)
 }

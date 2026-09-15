@@ -8,14 +8,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.aiassistant.presentation.navigation.AppNavigation
 import com.aiassistant.ui.theme.SynapseTheme
@@ -35,13 +31,15 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             SynapseTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    AppNavigation(
-                        modifier = Modifier.padding(innerPadding),
-                        deepLinkType = deepLink.first,
-                        deepLinkId = deepLink.second
-                    )
-                }
+                // No Scaffold here. This one came from the project template: it has no top bar
+                // and no bottom bar, so its only effect was to hand the system bar insets to
+                // NavHost -- and every screen has its own Scaffold that applies those insets
+                // again. That double application was the gap above each top bar and below each
+                // screen's content.
+                AppNavigation(
+                    deepLinkType = deepLink.first,
+                    deepLinkId = deepLink.second
+                )
             }
         }
     }

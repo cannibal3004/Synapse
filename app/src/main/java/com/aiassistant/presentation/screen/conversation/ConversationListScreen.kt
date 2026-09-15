@@ -17,7 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.aiassistant.domain.model.Conversation
 import com.aiassistant.presentation.vm.ConversationListViewModel
 import java.text.SimpleDateFormat
@@ -27,7 +27,8 @@ import java.util.concurrent.TimeUnit
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationListScreen(
-    onToggleDrawer: () -> Unit,
+    /** Opens the navigation drawer, or null when the sidebar is already on screen. */
+    onToggleDrawer: (() -> Unit)?,
     onConversationSelected: (String) -> Unit,
     onNewConversation: () -> Unit,
     viewModel: ConversationListViewModel = hiltViewModel()
@@ -45,30 +46,36 @@ fun ConversationListScreen(
         topBar = {
             if (isSearchActive) {
                 SearchBar(
-                    query = searchQuery,
-                    onQueryChange = { searchQuery = it },
-                    onSearch = { isSearchActive = false },
-                    active = false,
-                    onActiveChange = {},
-                    placeholder = { Text("Search conversations") },
-                    leadingIcon = {
-                        IconButton(onClick = {
-                            isSearchActive = false
-                            searchQuery = ""
-                        }) {
-                            Icon(Icons.Default.Close, "Close")
-                        }
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = {
-                                searchQuery = ""
-                                viewModel.clearSearch()
-                            }) {
-                                Icon(Icons.Default.Close, "Clear")
+                    inputField = {
+                        SearchBarDefaults.InputField(
+                            query = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            onSearch = { isSearchActive = false },
+                            expanded = false,
+                            onExpandedChange = {},
+                            placeholder = { Text("Search conversations") },
+                            leadingIcon = {
+                                IconButton(onClick = {
+                                    isSearchActive = false
+                                    searchQuery = ""
+                                }) {
+                                    Icon(Icons.Default.Close, "Close")
+                                }
+                            },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = {
+                                        searchQuery = ""
+                                        viewModel.clearSearch()
+                                    }) {
+                                        Icon(Icons.Default.Close, "Clear")
+                                    }
+                                }
                             }
-                        }
-                    }
+                        )
+                    },
+                    expanded = false,
+                    onExpandedChange = {}
                 ) {
                     LazyColumn {
                         items(searchResults, key = { it.id }) { conversation ->
@@ -86,8 +93,10 @@ fun ConversationListScreen(
                 TopAppBar(
                     title = { Text("Chats") },
                     navigationIcon = {
-                        IconButton(onClick = onToggleDrawer) {
-                            Icon(Icons.Default.Menu, "Menu")
+                        onToggleDrawer?.let { toggle ->
+                            IconButton(onClick = toggle) {
+                                Icon(Icons.Default.Menu, "Menu")
+                            }
                         }
                     },
                     actions = {

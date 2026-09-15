@@ -14,8 +14,8 @@ import com.aiassistant.domain.repository.ChatApiRepository
 import com.aiassistant.domain.repository.MessageRepository
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.repository.TaskRepository
+import com.aiassistant.domain.service.ActiveConversation
 import com.aiassistant.domain.service.ToolManager
-import com.aiassistant.domain.tool.OnDeviceToolExecutor
 import com.aiassistant.domain.tool.ToolExecutor
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.gson.Gson
@@ -28,6 +28,7 @@ import kotlinx.coroutines.withContext
 import java.time.format.DateTimeFormatter
 import java.time.ZonedDateTime
 import javax.inject.Inject
+import com.aiassistant.data.repository.DEFAULT_MAX_TOOL_ROUNDS
 
 class TaskExecutor @Inject constructor(
     private val chatApiRepository: ChatApiRepository,
@@ -36,10 +37,10 @@ class TaskExecutor @Inject constructor(
     private val onDeviceLlmRepository: OnDeviceLlmRepository,
     private val onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
     private val messageRepository: MessageRepository,
+    private val activeConversation: ActiveConversation,
     @ApplicationContext private val applicationContext: Context
 ) {
     private val gson = Gson()
-    private val onDeviceToolExecutor = OnDeviceToolExecutor(applicationContext)
 
     suspend fun executeTask(
         taskId: String,
@@ -48,6 +49,7 @@ class TaskExecutor @Inject constructor(
         defaultModel: String,
         defaultSystemPrompt: String,
         onDevice: Boolean = false,
+        maxToolRounds: Int = DEFAULT_MAX_TOOL_ROUNDS,
         onDeviceConversationId: String? = null,
         onProgress: ((progress: Float, message: String) -> Unit) = { _, _ -> }
     ): TaskExecutionResult {
@@ -69,9 +71,12 @@ class TaskExecutor @Inject constructor(
         onProgress(0f, "Starting task: ${task.title}")
 
         return if (onDevice) {
-            executeOnDeviceTask(task, onDeviceConversationId, startedAt, onProgress)
+            executeOnDeviceTask(task, onDeviceConversationId, startedAt, maxToolRounds, onProgress)
         } else {
-            executeCloudTask(task, apiKey, baseUrl, defaultModel, defaultSystemPrompt, startedAt, onProgress)
+            executeCloudTask(
+                task, apiKey, baseUrl, defaultModel, defaultSystemPrompt, startedAt,
+                maxToolRounds, onProgress
+            )
         }
     }
 
@@ -82,13 +87,15 @@ class TaskExecutor @Inject constructor(
         defaultModel: String,
         defaultSystemPrompt: String,
         startedAt: Long,
+        maxToolRounds: Int,
         onProgress: ((progress: Float, message: String) -> Unit)
     ): TaskExecutionResult {
         var toolCallsUsed = mutableListOf<String>()
-        val maxRounds = 10
+        val maxRounds = maxToolRounds
 
         return withContext(Dispatchers.IO) {
             try {
+                activeConversation.set("task_${task.id}")
                 val messages = buildTaskMessages(task, defaultSystemPrompt)
                 val tools = ToolManager.buildToolDefinitions()
                 var assistantContent = ""
@@ -127,6 +134,16 @@ class TaskExecutor @Inject constructor(
                                 result = result
                             )
                         }
+
+                        // See ChatViewModel: the assistant turn carrying tool_calls has to
+                        // precede the tool messages that answer it.
+                        messages.add(
+                            ApiChatMessage(
+                                role = "assistant",
+                                content = assistantMessage?.content?.ifBlank { null },
+                                tool_calls = toolCalls
+                            )
+                        )
 
                         toolResults.forEach { result ->
                             messages.add(
@@ -195,6 +212,7 @@ class TaskExecutor @Inject constructor(
         task: com.aiassistant.domain.model.ScheduledTask,
         conversationId: String?,
         startedAt: Long,
+        maxToolRounds: Int,
         onProgress: ((progress: Float, message: String) -> Unit)
     ): TaskExecutionResult {
         return withContext(Dispatchers.IO) {
@@ -233,7 +251,12 @@ class TaskExecutor @Inject constructor(
                     temperature = onDeviceSettings.temperature,
                     topK = onDeviceSettings.topK,
                     topP = onDeviceSettings.topP,
-                    useTools = true
+                    useTools = true,
+                    enableThinking = onDeviceSettings.enableThinking,
+                    thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                    maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                    backend = onDeviceSettings.backend,
+                    contextTokens = onDeviceSettings.contextTokens
                 )
 
               val initResult = if (needsReinit) {
@@ -243,7 +266,12 @@ class TaskExecutor @Inject constructor(
                         temperature = onDeviceSettings.temperature,
                         topK = onDeviceSettings.topK,
                         topP = onDeviceSettings.topP,
-                        useTools = true
+                        useTools = true,
+                        enableThinking = onDeviceSettings.enableThinking,
+                        thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                        maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                        backend = onDeviceSettings.backend,
+                        contextTokens = onDeviceSettings.contextTokens
                     )
                 } else {
                     Result.success(Unit)
@@ -312,11 +340,15 @@ class TaskExecutor @Inject constructor(
                 var chatError: String? = null
 
                 onDeviceLlmRepository.resetConversation()
-                onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
+                onDeviceLlmRepository.chatStream(domainMessages, maxToolRounds)
+                    .collect { event ->
                     when (event) {
                         is com.aiassistant.domain.llm.OnDeviceLlmEngine.ChatEvent.Chunk -> {
                             fullResponse += event.text
                             onProgress(70f + (fullResponse.length / 100f).coerceAtMost(20f), "Receiving response...")
+                        }
+                        is com.aiassistant.domain.llm.OnDeviceLlmEngine.ChatEvent.Thinking -> {
+                            onProgress(80f, "Model reasoning...")
                         }
                         is com.aiassistant.domain.llm.OnDeviceLlmEngine.ChatEvent.Done -> {
                             fullResponse = event.response

@@ -58,9 +58,17 @@ class TaskWorker(
     }
 
     override suspend fun doWork(): Result {
-        val taskId = inputData.getString(KEY_TASK_ID) ?: return Result.failure()
+        val taskId = inputData.getString(KEY_TASK_ID) ?: run {
+            Log.w(TAG, "Work started with no task id in its input data")
+            return Result.failure()
+        }
         val task = taskRepository.getTaskById(taskId)
-            ?: return Result.failure()
+            ?: run {
+                // Worth a log rather than a bare failure: from the outside this is a task that
+                // simply never ran, and the reason is only visible in WorkManager's own database.
+                Log.w(TAG, "No task $taskId in the database; it was deleted, or was scheduled under an id that was never stored")
+                return Result.failure()
+            }
 
         if (!task.isEnabled) {
             Log.d(TAG, "Task $taskId is disabled, skipping")
@@ -79,6 +87,7 @@ class TaskWorker(
         val defaultModel = settingsRepository.getDefaultModel() ?: ""
         val defaultSystemPrompt = settingsRepository.getSystemPrompt() ?: ""
         val apiKey = settingsRepository.getApiKey() ?: ""
+        val maxToolRounds = settingsRepository.getMaxToolRounds()
 
         if (!task.onDevice && apiKey.isBlank()) {
             Log.d(TAG, "No API key configured for cloud task $taskId")
@@ -104,6 +113,7 @@ class TaskWorker(
                     defaultModel = defaultModel,
                     defaultSystemPrompt = defaultSystemPrompt,
                     onDevice = false,
+                    maxToolRounds = maxToolRounds,
                     onDeviceConversationId = null,
                     onProgress = { _, message ->
                         notificationHelper.updateRunningTaskNotification(
@@ -240,7 +250,12 @@ class TaskWorker(
                                 temperature = onDeviceSettings.temperature,
                                 topK = onDeviceSettings.topK,
                                 topP = onDeviceSettings.topP,
-                                useTools = true
+                                useTools = true,
+                                enableThinking = onDeviceSettings.enableThinking,
+                                thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                                maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                                backend = onDeviceSettings.backend,
+                                contextTokens = onDeviceSettings.contextTokens
                             )
 
                             if (needsReinit) {
@@ -250,7 +265,12 @@ class TaskWorker(
                                     temperature = onDeviceSettings.temperature,
                                     topK = onDeviceSettings.topK,
                                     topP = onDeviceSettings.topP,
-                                    useTools = true
+                                    useTools = true,
+                                    enableThinking = onDeviceSettings.enableThinking,
+                                    thinkingTokenBudget = onDeviceSettings.thinkingTokenBudget,
+                                    maxOutputTokens = onDeviceSettings.maxOutputTokens,
+                                    backend = onDeviceSettings.backend,
+                                    contextTokens = onDeviceSettings.contextTokens
                                 )
 
                                 if (!initResult.isSuccess) {
@@ -312,11 +332,14 @@ class TaskWorker(
                             var fullResponse = ""
                             var chatError: String? = null
 
-                                onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
+                            onDeviceLlmRepository.chatStream(domainMessages).collect { event ->
                                 when (event) {
                                     is OnDeviceLlmEngine.ChatEvent.Chunk -> {
                                         fullResponse += event.text
                                         notificationHandler(applicationContext, task.title, "Receiving response...")
+                                    }
+                                    is OnDeviceLlmEngine.ChatEvent.Thinking -> {
+                                        notificationHandler(applicationContext, task.title, "Model reasoning...")
                                     }
                                     is OnDeviceLlmEngine.ChatEvent.Done -> {
                                         fullResponse = event.response

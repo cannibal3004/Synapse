@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.os.Build
 import androidx.core.content.ContextCompat
 import com.aiassistant.domain.service.ToolManager
+import com.google.ai.edge.litertlm.OpenApiTool
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -14,12 +15,48 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 
+/**
+ * Runs a command in Termux and waits for its output.
+ *
+ * The one implementation for every caller: the hosted-model path reaches it through
+ * [ToolManager] or [ToolExecutor], the on-device engine through [OpenApiTool] in the `:llm`
+ * process. It used to be two near-identical classes carrying two copies of the schema, and they
+ * drifted -- the hosted side read a parameter the schema never declared, so no command reached
+ * Termux at all on that path. One class cannot disagree with itself.
+ *
+ * Being an [OpenApiTool] also makes the schema below the only description of the tool: the
+ * hosted path derives its definition from that same JSON instead of restating it as a map.
+ *
+ * An instance per process is expected. Each registers a receiver on its own [RESULT_ACTION]
+ * and keeps its own execution ids -- see that constant for why the two must not be shared.
+ */
 class TermuxShellTool @Inject constructor(
     private val context: Context
-) {
-    private val pendingResults = ConcurrentHashMap<Int, CompletableDeferred<String>>()
+) : OpenApiTool {
+
+    /** One in-flight command, accumulated over however many broadcasts Termux sends back. */
+    private class Pending(
+        val result: CompletableDeferred<String> = CompletableDeferred(),
+        val stdout: StringBuilder = StringBuilder(),
+        val stderr: StringBuilder = StringBuilder(),
+        var exitCode: Int = -1,
+        var err: Int = 0,
+        var errmsg: String? = null
+    )
+
+    private val pendingResults = ConcurrentHashMap<Int, Pending>()
     private val executionId = AtomicInteger(0)
     private val resultReceiver = TermuxResultReceiver()
+
+    init {
+        ContextCompat.registerReceiver(
+            context,
+            resultReceiver,
+            IntentFilter(RESULT_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        register()
+    }
 
     inner class TermuxResultReceiver : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
@@ -27,16 +64,17 @@ class TermuxShellTool @Inject constructor(
             android.util.Log.d("TermuxShellTool", "Broadcast received (execId=$execId)")
             if (execId == -1) return
 
-            val deferred = pendingResults.remove(execId) ?: run {
+            val pending = pendingResults[execId] ?: run {
                 android.util.Log.w("TermuxShellTool", "No pending result for execId=$execId")
                 return
             }
 
             val resultBundle = intent.getBundleExtra(EXTRA_PLUGIN_RESULT_BUNDLE)
-                ?: run {
-                    deferred.complete("Error: No result bundle received from Termux")
-                    return
-                }
+            if (resultBundle == null) {
+                pendingResults.remove(execId)
+                pending.result.complete("Error: No result bundle received from Termux")
+                return
+            }
 
             val stdout = resultBundle.getString(EXTRA_PLUGIN_RESULT_BUNDLE_STDOUT, "")
             val stderr = resultBundle.getString(EXTRA_PLUGIN_RESULT_BUNDLE_STDERR, "")
@@ -44,29 +82,52 @@ class TermuxShellTool @Inject constructor(
             val err = resultBundle.getInt(EXTRA_PLUGIN_RESULT_BUNDLE_ERR, 0)
             val errmsg = resultBundle.getString(EXTRA_PLUGIN_RESULT_BUNDLE_ERRMSG, "")
 
-            android.util.Log.d("TermuxShellTool", "Bundle: stdout=${stdout.take(80)} exitCode=$exitCode err=$err errmsg=$errmsg")
+            android.util.Log.d(
+                "TermuxShellTool",
+                "Bundle: stdout=${stdout.take(80)} stderr=${stderr.take(80)} " +
+                    "exitCode=$exitCode err=$err errmsg=$errmsg"
+            )
 
-            val output = buildString {
-                val hasRealError = err != 0 && (!errmsg.isNullOrBlank() || exitCode != 0)
-                if (hasRealError) {
-                    append("Error: Termux execution failed (err=$err)")
-                    if (!errmsg.isNullOrBlank()) append(": $errmsg")
-                    if (!stderr.isNullOrBlank()) append("\nSTDERR: $stderr")
-                    if (!stdout.isNullOrBlank()) append("\nSTDOUT: $stdout")
-                    append("\n\nTroubleshooting:\n")
-                    append("1. Ensure 'allow-external-apps = true' in ~/.termux/termux.properties\n")
-                    append("2. Grant RUN_COMMAND permission: Settings > Apps > Synapse > Additional permissions\n")
-                    append("3. Restart Termux after changes")
-                } else {
-                    if (!stdout.isNullOrBlank()) append(stdout)
-                    if (!stderr.isNullOrBlank()) {
-                        if (isNotEmpty()) append("\n")
-                        append("STDERR:\n$stderr")
-                    }
-                    append("\n\nExit code: $exitCode")
-                }
+            if (stdout.isNotBlank()) pending.stdout.append(stdout)
+            if (stderr.isNotBlank()) pending.stderr.append(stderr)
+            if (exitCode >= 0) pending.exitCode = exitCode
+            if (err != 0) pending.err = err
+            if (errmsg.isNotBlank()) pending.errmsg = errmsg
+
+            // Output can arrive over more than one broadcast, so the command is finished only
+            // once an exit code lands. A plugin-level failure never produces one -- Termux
+            // reports err with exitCode -1 -- so that ends the wait too, or an unrunnable
+            // command would sit here until the timeout rather than saying why.
+            if (exitCode < 0 && err == 0) return
+
+            pendingResults.remove(execId)
+            val output = pending.render()
+            android.util.Log.d(
+                "TermuxShellTool",
+                "Final result (execId=$execId, length=${output.length})"
+            )
+            pending.result.complete(output)
+        }
+    }
+
+    private fun Pending.render(): String = buildString {
+        val hasRealError = err != 0 && (!errmsg.isNullOrBlank() || exitCode != 0)
+        if (hasRealError) {
+            append("Error: Termux execution failed (err=$err)")
+            if (!errmsg.isNullOrBlank()) append(": $errmsg")
+            if (stderr.isNotEmpty()) append("\nSTDERR: $stderr")
+            if (stdout.isNotEmpty()) append("\nSTDOUT: $stdout")
+            append("\n\nTroubleshooting:\n")
+            append("1. Ensure 'allow-external-apps = true' in ~/.termux/termux.properties\n")
+            append("2. Grant RUN_COMMAND permission: Settings > Apps > Synapse > Additional permissions\n")
+            append("3. Restart Termux after changes")
+        } else {
+            if (stdout.isNotEmpty()) append(stdout)
+            if (stderr.isNotEmpty()) {
+                if (isNotEmpty()) append("\n")
+                append("STDERR:\n$stderr")
             }
-            deferred.complete(output)
+            append("\n\nExit code: $exitCode")
         }
     }
 
@@ -96,77 +157,100 @@ class TermuxShellTool @Inject constructor(
         private const val EXTRA_PLUGIN_RESULT_BUNDLE_ERR = "err"
         private const val EXTRA_PLUGIN_RESULT_BUNDLE_ERRMSG = "errmsg"
 
-        private const val RESULT_ACTION = "com.aiassistant.TERMUX_RESULT"
+        /**
+         * Scoped to this process.
+         *
+         * The on-device engine runs in `:llm` while everything else runs in the main process,
+         * so two instances can be alive at once. A result broadcast is delivered to the whole
+         * package, and both instances number their commands from zero -- so a reply meant for
+         * one could be claimed by the other's identically numbered command. The pid keeps each
+         * process listening only to its own.
+         */
+        private val RESULT_ACTION =
+            "com.aiassistant.TERMUX_RESULT.${android.os.Process.myPid()}"
+
         private const val MAX_TIMEOUT_MS = 120_000L
+
+        private val KNOWN_SHELLS = setOf("bash", "sh", "zsh", "dash")
     }
 
-    init {
-        val filter = IntentFilter(RESULT_ACTION)
-        ContextCompat.registerReceiver(
-            context,
-            resultReceiver,
-            filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
-        register()
+    /** Registers with [ToolManager] from the same schema the on-device path reads. */
+    fun register() {
+        ToolManager.registerOpenApiTool(this)
     }
 
-   fun register() {
-        ToolManager.registerTool(
-            ToolManager.ToolDefinition(
-                name = "termux_shell",
-                description = "Execute commands in a full Linux shell (Termux). This gives you access to a complete Linux environment on the device. Use this for: network diagnostics (ping, curl, wget, nslookup, dig, traceroute, netstat, ss), file operations (ls, cat, grep, find, cp, mv, rm, mkdir, tar, zip, unzip, diff, wc, head, tail), system info (uname, df, free, top, ps, whoami, id, hostname, uptime), text processing (sed, awk, sort, uniq, tr, cut, xargs), package management (pkg, apt), Python/Node scripts, and any other Linux command-line task. This is a powerful tool for diagnosing issues, fetching data, processing files, and running scripts. Commands run synchronously with a timeout (default 30s, max 120s). Avoid long-running or interactive commands that would block indefinitely.",
-                parameters = mapOf(
-                    "type" to "object",
-                    "properties" to mapOf(
-                        "command" to mapOf(
-                            "type" to "string",
-                            "description" to "The interpreter to use. Default: 'bash'. Use 'python3', 'node' etc. for specific interpreters."
-                        ),
-                        "shell_command" to mapOf(
-                            "type" to "string",
-                            "description" to "REQUIRED: The shell command to run. Passed to 'bash -c'. Examples: 'ping -c 4 8.8.8.8', 'curl -s https://api.example.com', 'ls -la /sdcard', 'grep -r \"error\" *.log'."
-                        ),
-                        "script" to mapOf(
-                            "type" to "string",
-                            "description" to "Alternative to shell_command: multi-line script content passed via stdin. Use for complex Python/Node scripts."
-                        ),
-                        "workdir" to mapOf(
-                            "type" to "string",
-                            "description" to "Working directory. Defaults to ~. Use ~/path or /absolute/path"
-                        ),
-                        "timeout" to mapOf(
-                            "type" to "integer",
-                            "description" to "Timeout in seconds. Default: 30, max: 120"
-                        )
-                    ),
-                    "required" to listOf("shell_command")
-                ),
-                executor = { arguments ->
-                    runCatching {
-                        val args = com.google.gson.Gson().fromJson(arguments, Map::class.java)
-                        val command = args["command"] as? String ?: "bash"
-                        val shellCommand = args["shell_command"] as? String
-                        val script = args["script"] as? String ?: null
-                        val workdir = args["workdir"] as? String ?: null
-                        val timeoutSeconds = (args["timeout"] as? Number)?.toInt() ?: 30
+    override fun getToolDescriptionJsonString(): String = """
+        {
+          "name": "termux_shell",
+          "description": "Execute commands in a full Linux shell (Termux). This gives you access to a complete Linux environment on the device. Use this for: network diagnostics (ping, curl, wget, nslookup, dig, traceroute, netstat, ss), file operations (ls, cat, grep, find, cp, mv, rm, mkdir, tar, zip, unzip, diff, wc, head, tail), system info (uname, df, free, top, ps, whoami, id, hostname, uptime), text processing (sed, awk, sort, uniq, tr, cut, xargs), package management (pkg, apt), Python/Node scripts, and any other Linux command-line task. This is also how you do arithmetic and run code: there is no separate calculator or interpreter, so use 'python3 -c' or a shell expression for anything you need to compute rather than working it out yourself. This is a powerful tool for diagnosing issues, fetching data, processing files, and running scripts. Commands run synchronously with a timeout (default 30s, max 120s). Avoid long-running or interactive commands that would block indefinitely.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The interpreter for 'script'. Default: 'bash'. Use 'python3', 'node' etc. 'shell_command' always runs under a shell regardless."
+              },
+              "shell_command": {
+                "type": "string",
+                "description": "REQUIRED: The shell command to run. Passed to 'bash -c'. Examples: 'ping -c 4 8.8.8.8', 'curl -s https://api.example.com', 'ls -la /sdcard', 'grep -r \"error\" *.log'."
+              },
+              "script": {
+                "type": "string",
+                "description": "Alternative to shell_command: multi-line script content passed via stdin, run by the interpreter named in 'command'. Use for complex Python/Node scripts."
+              },
+              "workdir": {
+                "type": "string",
+                "description": "Working directory. Defaults to ~. Use ~/path or /absolute/path"
+              },
+              "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds. Default: 30, max: 120"
+              }
+            },
+            "required": ["shell_command"]
+          }
+        }
+    """.trimIndent()
 
-                        if (!shellCommand.isNullOrBlank()) {
-                            android.util.Log.d("TermuxShellTool", "Executing: cmd=$command args=-c $shellCommand workdir=$workdir timeout=${timeoutSeconds}s")
-                            executeCommand(command, "-c $shellCommand", null, workdir, timeoutSeconds)
-                        } else if (!script.isNullOrBlank()) {
-                            android.util.Log.d("TermuxShellTool", "Executing: cmd=$command script=${script.length} chars workdir=$workdir timeout=${timeoutSeconds}s")
-                            executeCommand(command, "", script, workdir, timeoutSeconds)
-                        } else {
-                            throw IllegalArgumentException("Missing 'shell_command' parameter. You must provide a command to run.")
-                        }
-                    }
-                }
-            )
-        )
+    /**
+     * Runs a `termux_shell` call from the raw JSON arguments the model produced.
+     *
+     * The only entry point, on purpose -- unpacking these arguments anywhere else is what broke
+     * the hosted path once already.
+     */
+    override fun execute(paramsJsonString: String): String {
+        val args = JsonUtils.parseToJsonMap(paramsJsonString)
+        val command = args["command"] as? String ?: "bash"
+        val shellCommand = args["shell_command"] as? String
+        val script = args["script"] as? String
+        val workdir = args["workdir"] as? String
+        val timeoutSeconds = (args["timeout"] as? Number)?.toInt() ?: 30
+
+        return when {
+            !shellCommand.isNullOrBlank() -> {
+                // shell_command is documented as going to `bash -c`, so an interpreter that is
+                // not a shell does not apply to it -- python3 -c "ping 8.8.8.8" is not what was
+                // asked for. Other interpreters take their code through `script`, over stdin.
+                val shell = KNOWN_SHELLS.firstOrNull { it == command.lowercase() } ?: "bash"
+                android.util.Log.d(
+                    "TermuxShellTool",
+                    "Executing: cmd=$shell args=-c $shellCommand workdir=$workdir timeout=${timeoutSeconds}s"
+                )
+                executeCommand(shell, "-c $shellCommand", null, workdir, timeoutSeconds)
+            }
+            !script.isNullOrBlank() -> {
+                android.util.Log.d(
+                    "TermuxShellTool",
+                    "Executing: cmd=$command script=${script.length} chars workdir=$workdir timeout=${timeoutSeconds}s"
+                )
+                executeCommand(command, "", script, workdir, timeoutSeconds)
+            }
+            else -> "Error: Missing 'shell_command'. Pass the command to run, e.g. " +
+                "{\"shell_command\": \"ping -c 4 8.8.8.8\"}."
+        }
     }
 
-    fun executeCommand(
+    private fun executeCommand(
         command: String,
         argumentsStr: String,
         script: String?,
@@ -184,7 +268,7 @@ class TermuxShellTool @Inject constructor(
         val timeout = (timeoutSeconds.coerceIn(1, 120) * 1000L).coerceAtMost(MAX_TIMEOUT_MS)
 
         val cmdPath = resolveCommandPath(command)
-      val cmdArgs: Array<String> = if (argumentsStr.isNotBlank()) {
+        val cmdArgs: Array<String> = if (argumentsStr.isNotBlank()) {
             val trimmed = argumentsStr.trim()
             if (trimmed.startsWith("-c ")) {
                 arrayOf("-c", trimmed.substring(3))
@@ -198,8 +282,8 @@ class TermuxShellTool @Inject constructor(
         android.util.Log.d("TermuxShellTool", "cmdPath=$cmdPath cmdArgs=${cmdArgs.contentToString()}")
 
         val id = executionId.incrementAndGet()
-        val deferred = CompletableDeferred<String>()
-        pendingResults[id] = deferred
+        val pending = Pending()
+        pendingResults[id] = pending
 
         val intent = buildIntent(cmdPath, cmdArgs, script, workdir, id)
         android.util.Log.d("TermuxShellTool", "Starting Termux service (id=$id)")
@@ -215,9 +299,7 @@ class TermuxShellTool @Inject constructor(
 
         return try {
             runBlocking {
-                withTimeoutOrNull(timeout) {
-                    deferred.await()
-                }
+                withTimeoutOrNull(timeout) { pending.result.await() }
             }?.also {
                 android.util.Log.d("TermuxShellTool", "Result received (id=$id, length=${it.length})")
             } ?: run {

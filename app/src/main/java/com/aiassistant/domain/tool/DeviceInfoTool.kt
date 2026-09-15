@@ -116,7 +116,7 @@ class DeviceInfoTool @Inject constructor(
                 if (voltage < 0) voltage = batteryManager.getIntProperty(11)
                 if (temperature < 0) temperature = batteryManager.getIntProperty(10)
             } catch (e: SecurityException) {
-                // BATTERY_STATS permission not granted
+                // Not expected: BATTERY_PROPERTY_* reads need no permission.
             } catch (e: Exception) {
                 // BatteryManager API not available
             }

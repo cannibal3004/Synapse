@@ -12,8 +12,6 @@ import com.aiassistant.domain.repository.MemoryRepository
 import com.aiassistant.domain.repository.OnDeviceLlmRepository
 import com.aiassistant.domain.repository.TaskRepository
 import com.aiassistant.domain.service.VectorMathService
-import com.aiassistant.domain.tool.CalculatorTool
-import com.aiassistant.domain.tool.CodeInterpreterTool
 import com.aiassistant.domain.tool.DeviceInfoTool
 import com.aiassistant.domain.tool.TermuxShellTool
 import com.aiassistant.domain.tool.ToolExecutor
@@ -28,6 +26,8 @@ import com.aiassistant.domain.usecase.TaskExecutor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
@@ -49,7 +49,14 @@ object AppModule {
             context,
             AppDatabase::class.java,
             "ai_assistant_database"
-        ).fallbackToDestructiveMigration()
+        ).addMigrations(MIGRATION_4_5)
+            // Still the fallback for anything without an explicit migration, but adding a column
+            // does not need to cost anyone their history.
+            .fallbackToDestructiveMigration(dropAllTables = true)
+            // The database is opened in both the app process and :llm (the on-device engine's
+            // memory tools), so invalidation has to cross the process boundary or one side's
+            // Flows go stale after the other writes.
+            .enableMultiInstanceInvalidation()
             .build()
     }
 
@@ -89,16 +96,15 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideMemorySearchUseCase(repository: MemoryRepository) =
-        MemorySearchUseCase(repository)
+    fun provideMemorySearchUseCase(
+        repository: MemoryRepository,
+        embeddingProvider: com.aiassistant.domain.repository.EmbeddingProvider,
+        vectorMathService: VectorMathService
+    ) = MemorySearchUseCase(repository, embeddingProvider, vectorMathService)
 
     @Provides
     @Singleton
     fun provideWebSearchTool(@ApplicationContext context: Context) = WebSearchTool(context)
-
-    @Provides
-    @Singleton
-    fun provideCalculatorTool() = CalculatorTool()
 
     @Provides
     @Singleton
@@ -110,10 +116,6 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideCodeInterpreterTool() = CodeInterpreterTool()
-
-    @Provides
-    @Singleton
     fun provideDeviceInfoTool(@ApplicationContext context: android.content.Context) =
         DeviceInfoTool(context)
 
@@ -121,6 +123,21 @@ object AppModule {
     @Singleton
     fun provideTermuxShellTool(@ApplicationContext context: Context) =
         TermuxShellTool(context)
+
+    @Provides
+    @Singleton
+    fun provideCalendarTool(@ApplicationContext context: Context) =
+        com.aiassistant.domain.tool.CalendarTool(context)
+
+    @Provides
+    @Singleton
+    fun provideSmsTool(@ApplicationContext context: Context) =
+        com.aiassistant.domain.tool.SmsTool(context)
+
+    @Provides
+    @Singleton
+    fun provideSaveFileTool(@ApplicationContext context: Context) =
+        com.aiassistant.domain.tool.SaveFileTool(context)
 
     @Provides
     @Singleton
@@ -140,8 +157,18 @@ object AppModule {
         onDeviceLlmRepository: OnDeviceLlmRepository,
         onDeviceLlmSettingsManager: OnDeviceLlmSettingsManager,
         messageRepository: MessageRepository,
+        activeConversation: com.aiassistant.domain.service.ActiveConversation,
         @ApplicationContext context: Context
-    ) = TaskExecutor(chatApiRepository, taskRepository, toolExecutor, onDeviceLlmRepository, onDeviceLlmSettingsManager, messageRepository, context)
+    ) = TaskExecutor(
+        chatApiRepository,
+        taskRepository,
+        toolExecutor,
+        onDeviceLlmRepository,
+        onDeviceLlmSettingsManager,
+        messageRepository,
+        activeConversation,
+        context
+    )
 
     @Provides
     @Singleton
@@ -161,4 +188,16 @@ object AppModule {
     @Singleton
     fun provideLlmClient(@ApplicationContext context: Context) =
         com.aiassistant.client.LlmClient(context)
+
+    @Provides
+    @Singleton
+    fun provideOnDeviceEmbeddingEngine(@ApplicationContext context: Context) =
+        com.aiassistant.domain.llm.OnDeviceEmbeddingEngine(context)
+}
+
+/** Adds `messages.activity`; see MessageEntity. Nullable, so existing rows need no backfill. */
+private val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN activity TEXT")
+    }
 }

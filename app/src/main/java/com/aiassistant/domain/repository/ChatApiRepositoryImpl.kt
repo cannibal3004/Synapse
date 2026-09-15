@@ -98,17 +98,17 @@ class ChatApiRepositoryImpl @Inject constructor(
         )
     }
 
-    override suspend fun streamChatResponse(
+    override fun streamChatCompletion(
         apiKey: String,
         model: String,
         baseUrl: String?,
-        messages: List<ApiChatMessage>
-    ): Sequence<String> {
-        return chatRepository.streamChatResponse(
-            apiKey = apiKey,
-            model = model,
-            baseUrl = baseUrl,
-            messages = messages
-        )
-    }
+        messages: List<ApiChatMessage>,
+        tools: List<com.aiassistant.data.model.api.Tool>
+    ) = chatRepository.streamChatCompletion(
+        apiKey = apiKey,
+        model = model,
+        baseUrl = baseUrl,
+        messages = messages,
+        tools = tools
+    )
 }
